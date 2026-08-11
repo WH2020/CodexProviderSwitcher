@@ -70,6 +70,38 @@ public sealed class SimpleProviderServiceTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_StopsAfterTheSecondPlanStale()
+    {
+        FakeApplicationService application = FakeApplicationService.PlanStaleTwice();
+        SimpleProviderService service = new(application);
+
+        SimpleApplicationException error = await Assert.ThrowsAsync<SimpleApplicationException>(
+            () => service.ExecuteAsync(
+                new SyncIntent(@"C:\fixture\.codex", null, "openai"),
+                CancellationToken.None));
+
+        Assert.Equal(ApplicationOperationLifecycle.Failed, error.Lifecycle);
+        Assert.Contains(error.Errors, item =>
+            item.Code == "plan_stale" && item.Message == "The second plan is stale.");
+        Assert.Equal(2, application.CreatedPlans.Count);
+        Assert.Equal(2, application.SyncRequests.Count);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RejectsUnsupportedIntentBeforeCreatingAPlan()
+    {
+        FakeApplicationService application = new();
+        SimpleProviderService service = new(application);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => service.ExecuteAsync(
+                new RestoreIntent(@"C:\fixture\.codex", null, @"C:\fixture\backup"),
+                CancellationToken.None));
+
+        Assert.Empty(application.CreatedPlans);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_PreservesRecoveryEvidence()
     {
         FakeApplicationService application = FakeApplicationService.RecoveryRequired(
@@ -136,6 +168,26 @@ public sealed class SimpleProviderServiceTests
                 null,
                 [new ApplicationError("plan_stale", "The plan is stale.")]));
             service._syncOutcomes.Enqueue(SucceededSync(freshPlan, "openai"));
+            return service;
+        }
+
+        public static FakeApplicationService PlanStaleTwice()
+        {
+            FakeApplicationService service = new();
+            ApplicationOperationPlan firstPlan = CreatePlan("first-stale-plan");
+            ApplicationOperationPlan secondPlan = CreatePlan("second-stale-plan");
+            service._plans.Enqueue(ReadyPlan(firstPlan));
+            service._plans.Enqueue(ReadyPlan(secondPlan));
+            service._syncOutcomes.Enqueue(Outcome<ApplicationWriteResult<SyncResult>>(
+                ApplicationOperationKind.Sync,
+                ApplicationOperationLifecycle.Rejected,
+                null,
+                [new ApplicationError("plan_stale", "The first plan is stale.")]));
+            service._syncOutcomes.Enqueue(Outcome<ApplicationWriteResult<SyncResult>>(
+                ApplicationOperationKind.Sync,
+                ApplicationOperationLifecycle.Failed,
+                null,
+                [new ApplicationError("plan_stale", "The second plan is stale.")]));
             return service;
         }
 

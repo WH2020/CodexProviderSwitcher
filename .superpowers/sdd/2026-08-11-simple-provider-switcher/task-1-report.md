@@ -84,3 +84,51 @@ for this full-suite command.
 
 The executable has an intentionally inert entry point until Task 5 supplies
 the planned UI startup. No other known Task 1 issues remain.
+
+## Review follow-up: intent boundary and stale retry limit
+
+An independent review found that unsupported write intents reached
+`CreatePlanAsync` before being rejected, and that the stale retry upper bound
+was not explicitly tested. `ExecuteAsync` now rejects every intent other than
+`SyncIntent` or `SwitchIntent` before the retry loop, so unsupported
+`RestoreIntent`, `PruneIntent`, and future intent types cannot create a plan.
+
+Two tests were added:
+
+- `ExecuteAsync_RejectsUnsupportedIntentBeforeCreatingAPlan` verifies an
+  unsupported `RestoreIntent` throws `ArgumentOutOfRangeException` without a
+  created plan.
+- `ExecuteAsync_StopsAfterTheSecondPlanStale` verifies two continuous
+  `plan_stale` outcomes produce the second outcome's `Failed` lifecycle and
+  structured error, with exactly two plan and apply calls.
+
+### Follow-up RED evidence
+
+The focused command was run after adding the tests:
+
+```powershell
+& $dotnet test desktop\CodexProviderSync.SimpleApp.Tests\CodexProviderSync.SimpleApp.Tests.csproj -c Release --filter FullyQualifiedName~SimpleProviderServiceTests
+```
+
+It failed with exit code 1. The unsupported-intent test expected
+`ArgumentOutOfRangeException`, but the actual exception was `InvalidOperationException:
+Queue empty`, with the stack trace showing `SimpleProviderService.ExecuteAsync`
+called `FakeApplicationService.CreatePlanAsync` first. This directly reproduced
+the reviewed boundary defect. The first draft of the double-stale fixture used
+non-`plan_stale` codes and was corrected before the final RED run; with the
+actual `plan_stale` code it verified the existing bounded retry behavior.
+
+### Follow-up GREEN evidence
+
+The same focused command passed after adding the pre-loop type guard: 7 passed,
+0 failed, 0 skipped.
+
+### Follow-up full-suite evidence
+
+```powershell
+& $dotnet test CodexProviderSync.sln -c Release --no-restore
+```
+
+Result: exit code 0. Passed: SimpleApp 7, GuiE2E 36, Application 49, App 66,
+Automation 27, Core 188; one platform-specific Core test was skipped. No
+restore was performed for the full-suite command.

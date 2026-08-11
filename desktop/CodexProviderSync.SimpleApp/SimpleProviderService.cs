@@ -62,6 +62,11 @@ internal sealed class SimpleProviderService : ISimpleProviderService
         ApplicationWriteIntent intent,
         CancellationToken cancellationToken = default)
     {
+        if (intent is not SyncIntent and not SwitchIntent)
+        {
+            throw new ArgumentOutOfRangeException(nameof(intent));
+        }
+
         for (int attempt = 0; attempt < 2; attempt++)
         {
             ApplicationOutcome<ApplicationOperationPlan> planned =
