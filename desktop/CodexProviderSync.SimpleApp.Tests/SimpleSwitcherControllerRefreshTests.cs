@@ -219,14 +219,18 @@ public sealed class SimpleSwitcherControllerRefreshTests
         };
 
         Task? refresh = null;
+        bool refreshRequestedWhileSelecting = false;
+        bool secondRequestReleased = false;
         TriggeringProviderList providers = new(
             [new SimpleProviderItem("custom", true)],
             () =>
             {
                 refresh = Task.Run(() => controller.RefreshAsync());
-                service.WaitForSecondRequest();
-                service.ReleaseSecondRequest();
-                refresh.Wait(TimeSpan.FromMilliseconds(100));
+                refreshRequestedWhileSelecting = service.WaitForSecondRequest(TimeSpan.FromSeconds(1));
+                if (refreshRequestedWhileSelecting)
+                {
+                    secondRequestReleased = service.ReleaseSecondRequest();
+                }
             });
         FieldInfo snapshotField = typeof(SimpleSwitcherController).GetField(
             "_snapshot",
@@ -234,6 +238,13 @@ public sealed class SimpleSwitcherControllerRefreshTests
         snapshotField.SetValue(controller, controller.Snapshot with { Providers = providers });
 
         controller.SelectProvider("custom");
+        Assert.False(refreshRequestedWhileSelecting);
+        Assert.True(service.WaitForSecondRequest(TimeSpan.FromSeconds(1)));
+        if (!secondRequestReleased)
+        {
+            secondRequestReleased = service.ReleaseSecondRequest();
+        }
+        Assert.True(secondRequestReleased);
         await refresh!;
 
         Assert.DoesNotContain(controller.Snapshot.Providers, item => item.Id == "custom");
@@ -243,6 +254,43 @@ public sealed class SimpleSwitcherControllerRefreshTests
             Assert.DoesNotContain(published, snapshot =>
                 snapshot.SelectedProviderId == "custom" && snapshot.CanExecute);
         }
+    }
+
+    [Fact]
+    public async Task RefreshAsync_PublishesLoadingWithBothControlsDisabledBeforeServiceCompletes()
+    {
+        GateStatusProviderService service = new(Status(
+            current: "openai",
+            configured: ["openai", "custom"]));
+        SimpleSwitcherController controller = new(service, new FakeProcessProbe(), @"C:\fixture\.codex");
+
+        Task refresh = controller.RefreshAsync();
+
+        Assert.True(service.WaitForRequest(TimeSpan.FromSeconds(1)));
+        Assert.Equal(SimpleActivity.Loading, controller.Snapshot.Activity);
+        Assert.False(controller.Snapshot.CanRefresh);
+        Assert.False(controller.Snapshot.CanExecute);
+        Assert.True(service.Release());
+        await refresh;
+    }
+
+    [Fact]
+    public async Task RefreshAsync_PublishesCompletedControlsTogetherAfterServiceCompletes()
+    {
+        GateStatusProviderService service = new(Status(
+            current: "openai",
+            configured: ["openai"]));
+        SimpleSwitcherController controller = new(service, new FakeProcessProbe(), @"C:\fixture\.codex");
+
+        Task refresh = controller.RefreshAsync();
+
+        Assert.True(service.WaitForRequest(TimeSpan.FromSeconds(1)));
+        Assert.True(service.Release());
+        await refresh;
+
+        Assert.Equal(SimpleActivity.Ready, controller.Snapshot.Activity);
+        Assert.True(controller.Snapshot.CanRefresh);
+        Assert.True(controller.Snapshot.CanExecute);
     }
 
     private static SimpleSwitcherController Controller(StatusSnapshot status) => new(

@@ -39,15 +39,7 @@ internal sealed class SimpleSwitcherController
         string? preferredProvider = null,
         CancellationToken cancellationToken = default)
     {
-        Interlocked.Increment(ref _activeOperations);
-        Publish(snapshot => snapshot with
-        {
-            Activity = SimpleActivity.Loading,
-            Message = "正在读取状态...",
-            Details = string.Empty,
-            CanRefresh = false,
-            CanExecute = false
-        });
+        BeginRefresh();
 
         SimpleSwitcherSnapshot completed = Snapshot;
         try
@@ -86,15 +78,7 @@ internal sealed class SimpleSwitcherController
         }
         finally
         {
-            Interlocked.Decrement(ref _activeOperations);
-            Publish(_ => completed with
-            {
-                CanRefresh = Volatile.Read(ref _activeOperations) == 0,
-                CanExecute = CanExecute(
-                    completed.Activity,
-                    completed.SelectedProviderId,
-                    completed.Details)
-            });
+            CompleteRefresh(completed);
         }
     }
 
@@ -224,12 +208,39 @@ internal sealed class SimpleSwitcherController
         && string.IsNullOrEmpty(details)
         && Volatile.Read(ref _activeOperations) == 0;
 
-    private void Publish(Func<SimpleSwitcherSnapshot, SimpleSwitcherSnapshot> update)
+    private void BeginRefresh()
     {
         SimpleSwitcherSnapshot published;
         lock (_snapshotLock)
         {
-            published = update(_snapshot);
+            Interlocked.Increment(ref _activeOperations);
+            published = _snapshot with
+            {
+                Activity = SimpleActivity.Loading,
+                Message = "正在读取状态...",
+                Details = string.Empty,
+                CanRefresh = false,
+                CanExecute = false
+            };
+            _snapshot = published;
+        }
+        NotifySnapshotChanged(published);
+    }
+
+    private void CompleteRefresh(SimpleSwitcherSnapshot completed)
+    {
+        SimpleSwitcherSnapshot published;
+        lock (_snapshotLock)
+        {
+            Interlocked.Decrement(ref _activeOperations);
+            published = completed with
+            {
+                CanRefresh = Volatile.Read(ref _activeOperations) == 0,
+                CanExecute = CanExecute(
+                    completed.Activity,
+                    completed.SelectedProviderId,
+                    completed.Details)
+            };
             _snapshot = published;
         }
         NotifySnapshotChanged(published);

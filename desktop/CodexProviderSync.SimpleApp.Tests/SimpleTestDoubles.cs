@@ -97,10 +97,34 @@ internal sealed class BlockingStatusProviderService : ISimpleProviderService
     public Task<SyncResult> ExecuteAsync(ApplicationWriteIntent intent, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException();
 
-    internal void WaitForSecondRequest() =>
-        _secondRequested.Wait(TimeSpan.FromSeconds(5));
+    internal bool WaitForSecondRequest(TimeSpan timeout) => _secondRequested.Wait(timeout);
 
-    internal void ReleaseSecondRequest() => _releaseSecond.TrySetResult();
+    internal bool ReleaseSecondRequest() => _releaseSecond.TrySetResult();
+}
+
+internal sealed class GateStatusProviderService : ISimpleProviderService
+{
+    private readonly StatusSnapshot _status;
+    private readonly ManualResetEventSlim _requested = new();
+    private readonly TaskCompletionSource _release = new();
+
+    internal GateStatusProviderService(StatusSnapshot status)
+    {
+        _status = status;
+    }
+
+    public async Task<StatusSnapshot> GetStatusAsync(string codexHome, CancellationToken cancellationToken = default)
+    {
+        _requested.Set();
+        await _release.Task.WaitAsync(cancellationToken);
+        return _status;
+    }
+
+    public Task<SyncResult> ExecuteAsync(ApplicationWriteIntent intent, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    internal bool WaitForRequest(TimeSpan timeout) => _requested.Wait(timeout);
+    internal bool Release() => _release.TrySetResult();
 }
 
 internal sealed class TriggeringProviderList : IReadOnlyList<SimpleProviderItem>
