@@ -49,88 +49,117 @@ internal sealed class SimpleSwitcherController
             CanExecute = false
         });
 
+        SimpleSwitcherSnapshot completed = Snapshot;
         try
         {
             StatusSnapshot status = await _service.GetStatusAsync(_codexHome, cancellationToken);
             IReadOnlyList<SimpleProviderItem> providers = BuildProviders(status);
             string? selected = SelectConfiguredProvider(preferredProvider, status.CurrentProvider.Provider, providers);
-            IReadOnlyList<CodexProcessInfo> runningProcesses = _processProbe.FindRunning();
 
-            Interlocked.Decrement(ref _activeOperations);
-            Publish(_ => BuildStatusSnapshot(status, providers, selected, runningProcesses));
+            if (status.PendingTransactions.Count > 0)
+            {
+                completed = BuildRecoverySnapshot(status, providers, selected);
+            }
+            else if (!status.SqliteAccess.Supported)
+            {
+                completed = BuildBlockedSnapshot(status, providers, selected);
+            }
+            else
+            {
+                completed = BuildReadySnapshot(
+                    status,
+                    providers,
+                    selected,
+                    _processProbe.FindRunning());
+            }
         }
         catch
         {
-            Interlocked.Decrement(ref _activeOperations);
-            Publish(snapshot => snapshot with
+            completed = Snapshot with
             {
                 Activity = SimpleActivity.Failed,
                 Message = "读取状态失败。",
                 Details = string.Empty,
-                CanRefresh = Volatile.Read(ref _activeOperations) == 0,
                 CanExecute = false
-            });
+            };
             throw;
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _activeOperations);
+            Publish(_ => completed with
+            {
+                CanRefresh = Volatile.Read(ref _activeOperations) == 0,
+                CanExecute = CanExecute(
+                    completed.Activity,
+                    completed.SelectedProviderId,
+                    completed.Details)
+            });
         }
     }
 
     internal bool SelectProvider(string? providerId)
     {
-        SimpleSwitcherSnapshot current = Snapshot;
-        if (string.IsNullOrWhiteSpace(providerId)
-            || !current.Providers.Any(item => string.Equals(item.Id, providerId, StringComparison.Ordinal)))
+        SimpleSwitcherSnapshot published;
+        lock (_snapshotLock)
         {
-            return false;
+            if (string.IsNullOrWhiteSpace(providerId)
+                || !_snapshot.Providers.Any(item => string.Equals(item.Id, providerId, StringComparison.Ordinal)))
+            {
+                return false;
+            }
+            published = _snapshot with
+            {
+                SelectedProviderId = providerId,
+                CanExecute = CanExecute(_snapshot.Activity, providerId, _snapshot.Details)
+            };
+            _snapshot = published;
         }
-
-        Publish(snapshot => snapshot with
-        {
-            SelectedProviderId = providerId,
-            CanExecute = CanExecute(snapshot.Activity, providerId, snapshot.Details)
-        });
+        NotifySnapshotChanged(published);
         return true;
     }
 
-    private SimpleSwitcherSnapshot BuildStatusSnapshot(
+    private SimpleSwitcherSnapshot BuildRecoverySnapshot(
+        StatusSnapshot status,
+        IReadOnlyList<SimpleProviderItem> providers,
+        string? selectedProvider)
+    {
+        return new SimpleSwitcherSnapshot
+        {
+            Activity = SimpleActivity.RecoveryRequired,
+            CodexHome = _codexHome,
+            CurrentProviderId = status.CurrentProvider.Provider,
+            Providers = providers,
+            SelectedProviderId = selectedProvider,
+            Message = "检测到需要恢复的未完成操作。",
+            Details = string.Join(Environment.NewLine, status.PendingTransactions.Select(item => item.BackupDirectory)),
+            EncryptedContentWarning = status.EncryptedContentWarning,
+            CanExecute = false
+        };
+    }
+
+    private SimpleSwitcherSnapshot BuildBlockedSnapshot(
+        StatusSnapshot status,
+        IReadOnlyList<SimpleProviderItem> providers,
+        string? selectedProvider) => new()
+    {
+        Activity = SimpleActivity.Blocked,
+        CodexHome = _codexHome,
+        CurrentProviderId = status.CurrentProvider.Provider,
+        Providers = providers,
+        SelectedProviderId = selectedProvider,
+        Message = "SQLite 不支持，无法执行切换。",
+        Details = status.SqliteAccess.Message ?? string.Empty,
+        EncryptedContentWarning = status.EncryptedContentWarning,
+        CanExecute = false
+    };
+
+    private SimpleSwitcherSnapshot BuildReadySnapshot(
         StatusSnapshot status,
         IReadOnlyList<SimpleProviderItem> providers,
         string? selectedProvider,
         IReadOnlyList<CodexProcessInfo> runningProcesses)
     {
-        if (status.PendingTransactions.Count > 0)
-        {
-            return new SimpleSwitcherSnapshot
-            {
-                Activity = SimpleActivity.RecoveryRequired,
-                CodexHome = _codexHome,
-                CurrentProviderId = status.CurrentProvider.Provider,
-                Providers = providers,
-                SelectedProviderId = selectedProvider,
-                Message = "检测到需要恢复的未完成操作。",
-                Details = string.Join(Environment.NewLine, status.PendingTransactions.Select(item => item.BackupDirectory)),
-                EncryptedContentWarning = status.EncryptedContentWarning,
-                CanRefresh = Volatile.Read(ref _activeOperations) == 0,
-                CanExecute = false
-            };
-        }
-
-        if (!status.SqliteAccess.Supported)
-        {
-            return new SimpleSwitcherSnapshot
-            {
-                Activity = SimpleActivity.Blocked,
-                CodexHome = _codexHome,
-                CurrentProviderId = status.CurrentProvider.Provider,
-                Providers = providers,
-                SelectedProviderId = selectedProvider,
-                Message = "SQLite 不支持，无法执行切换。",
-                Details = status.SqliteAccess.Message ?? string.Empty,
-                EncryptedContentWarning = status.EncryptedContentWarning,
-                CanRefresh = Volatile.Read(ref _activeOperations) == 0,
-                CanExecute = false
-            };
-        }
-
         bool processesRunning = runningProcesses.Count > 0;
         string details = processesRunning
             ? string.Join(", ", runningProcesses.Select(item => item.Name + " (" + item.ProcessId + ")"))
@@ -145,8 +174,7 @@ internal sealed class SimpleSwitcherController
             Message = processesRunning ? "检测到 Codex 正在运行，关闭后可执行。" : "状态已就绪。",
             Details = details,
             EncryptedContentWarning = status.EncryptedContentWarning,
-            CanRefresh = Volatile.Read(ref _activeOperations) == 0,
-            CanExecute = CanExecute(SimpleActivity.Ready, selectedProvider, details)
+            CanExecute = false
         };
     }
 
@@ -170,7 +198,8 @@ internal sealed class SimpleSwitcherController
             .Select(item => new SimpleProviderItem(
                 item,
                 string.Equals(item, status.CurrentProvider.Provider, StringComparison.Ordinal)))
-            .ToArray();
+            .ToArray()
+            .AsReadOnly();
     }
 
     private static string? SelectConfiguredProvider(
@@ -197,10 +226,28 @@ internal sealed class SimpleSwitcherController
 
     private void Publish(Func<SimpleSwitcherSnapshot, SimpleSwitcherSnapshot> update)
     {
+        SimpleSwitcherSnapshot published;
         lock (_snapshotLock)
         {
-            _snapshot = update(_snapshot);
+            published = update(_snapshot);
+            _snapshot = published;
         }
-        SnapshotChanged?.Invoke(this, EventArgs.Empty);
+        NotifySnapshotChanged(published);
+    }
+
+    private void NotifySnapshotChanged(SimpleSwitcherSnapshot snapshot)
+    {
+        Delegate[] handlers = SnapshotChanged?.GetInvocationList() ?? [];
+        foreach (EventHandler handler in handlers.Cast<EventHandler>())
+        {
+            try
+            {
+                handler(this, EventArgs.Empty);
+            }
+            catch
+            {
+                // Observers must not corrupt the state machine or active operation count.
+            }
+        }
     }
 }

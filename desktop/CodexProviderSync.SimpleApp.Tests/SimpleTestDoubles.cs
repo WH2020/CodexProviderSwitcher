@@ -62,3 +62,70 @@ internal sealed class FakeProcessProbe : ICodexProcessProbe
 
     public IReadOnlyList<CodexProcessInfo> FindRunning() => _running;
 }
+
+internal sealed class ThrowingProcessProbe : ICodexProcessProbe
+{
+    public IReadOnlyList<CodexProcessInfo> FindRunning() =>
+        throw new InvalidOperationException("Process probing must not occur for a blocked state.");
+}
+
+internal sealed class BlockingStatusProviderService : ISimpleProviderService
+{
+    private readonly StatusSnapshot _first;
+    private readonly StatusSnapshot _second;
+    private readonly ManualResetEventSlim _secondRequested = new();
+    private readonly TaskCompletionSource _releaseSecond = new();
+    private int _requests;
+
+    internal BlockingStatusProviderService(StatusSnapshot first, StatusSnapshot second)
+    {
+        _first = first;
+        _second = second;
+    }
+
+    public async Task<StatusSnapshot> GetStatusAsync(string codexHome, CancellationToken cancellationToken = default)
+    {
+        if (Interlocked.Increment(ref _requests) == 1)
+        {
+            return _first;
+        }
+        _secondRequested.Set();
+        await _releaseSecond.Task.WaitAsync(cancellationToken);
+        return _second;
+    }
+
+    public Task<SyncResult> ExecuteAsync(ApplicationWriteIntent intent, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    internal void WaitForSecondRequest() =>
+        _secondRequested.Wait(TimeSpan.FromSeconds(5));
+
+    internal void ReleaseSecondRequest() => _releaseSecond.TrySetResult();
+}
+
+internal sealed class TriggeringProviderList : IReadOnlyList<SimpleProviderItem>
+{
+    private readonly IReadOnlyList<SimpleProviderItem> _items;
+    private readonly Action _onEnumerate;
+    private int _triggered;
+
+    internal TriggeringProviderList(IReadOnlyList<SimpleProviderItem> items, Action onEnumerate)
+    {
+        _items = items;
+        _onEnumerate = onEnumerate;
+    }
+
+    public SimpleProviderItem this[int index] => _items[index];
+    public int Count => _items.Count;
+
+    public IEnumerator<SimpleProviderItem> GetEnumerator()
+    {
+        if (Interlocked.Exchange(ref _triggered, 1) == 0)
+        {
+            _onEnumerate();
+        }
+        return _items.GetEnumerator();
+    }
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+}
