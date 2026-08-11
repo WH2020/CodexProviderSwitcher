@@ -1,4 +1,3 @@
-using CodexProviderSync.Application;
 using CodexProviderSync.Core;
 
 namespace CodexProviderSync.SimpleApp;
@@ -23,16 +22,10 @@ internal static class Program
                 return;
             }
 
-            CodexSyncService syncService = new();
-            IApplicationService application = new ApplicationService(
-                new CoreApplicationStatusPort(syncService),
-                new CoreApplicationWritePort(syncService, new CodexHomeService()),
-                new InMemoryApplicationPlanLedger());
-            SimpleProviderService providerService = new(application);
-            SimpleSwitcherController controller = new(
-                providerService,
-                new CodexProcessProbe(),
-                new CodexHomeService().NormalizeCodexHome(null));
+            string codexHome = new CodexHomeService().NormalizeCodexHome(null);
+            SimpleSwitcherController controller = SimpleAppComposition.CreateController(
+                codexHome,
+                new CodexProcessProbe());
             SimpleSettingsStore settings = new(paths.SettingsPath);
             System.Windows.Forms.Application.Run(new SimpleMainForm(controller, settings));
         }

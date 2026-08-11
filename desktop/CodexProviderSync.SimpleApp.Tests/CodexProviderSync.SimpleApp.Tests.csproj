@@ -18,4 +18,10 @@
   <ItemGroup>
     <ProjectReference Include="..\CodexProviderSync.SimpleApp\CodexProviderSync.SimpleApp.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\CodexProviderSync.Core.Tests\TestCodexHomeFixture.cs"
+             Link="Fixtures\TestCodexHomeFixture.cs" />
+    <Compile Include="..\CodexProviderSync.Core.Tests\TestEnvironment.cs"
+             Link="Fixtures\TestEnvironment.cs" />
+  </ItemGroup>
 </Project>
