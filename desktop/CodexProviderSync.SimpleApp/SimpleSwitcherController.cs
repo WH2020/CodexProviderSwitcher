@@ -1,3 +1,4 @@
+using CodexProviderSync.Application;
 using CodexProviderSync.Core;
 
 namespace CodexProviderSync.SimpleApp;
@@ -10,6 +11,7 @@ internal sealed class SimpleSwitcherController
     private readonly object _snapshotLock = new();
     private SimpleSwitcherSnapshot _snapshot;
     private int _activeOperations;
+    private int _executeInProgress;
 
     internal SimpleSwitcherController(
         ISimpleProviderService service,
@@ -102,6 +104,157 @@ internal sealed class SimpleSwitcherController
         NotifySnapshotChanged(published);
         return true;
     }
+
+    internal async Task ExecuteAsync(CancellationToken cancellationToken = default)
+    {
+        if (Interlocked.CompareExchange(ref _executeInProgress, 1, 0) != 0)
+        {
+            return;
+        }
+
+        SimpleSwitcherSnapshot initial = Snapshot;
+        SimpleSwitcherSnapshot completed = initial;
+        try
+        {
+            if (initial.Activity != SimpleActivity.Ready
+                || string.IsNullOrWhiteSpace(initial.SelectedProviderId))
+            {
+                return;
+            }
+
+            BeginExecution();
+            string selectedProvider = initial.SelectedProviderId;
+            IReadOnlyList<CodexProcessInfo> running = _processProbe.FindRunning();
+            if (running.Count > 0)
+            {
+                completed = initial with
+                {
+                    Activity = SimpleActivity.Blocked,
+                    Message = "检测到 Codex 正在运行，请手动关闭后再试。",
+                    Details = string.Join(", ", running.Select(item => $"{item.Name} (PID {item.ProcessId})")),
+                    CanExecute = false,
+                    LastResult = null
+                };
+                return;
+            }
+
+            StatusSnapshot refreshed = await ReadStatusAsync(selectedProvider, cancellationToken);
+            IReadOnlyList<SimpleProviderItem> providers = BuildProviders(refreshed);
+            if (refreshed.PendingTransactions.Count > 0)
+            {
+                completed = BuildRecoverySnapshot(refreshed, providers, selectedProvider);
+                return;
+            }
+            if (!refreshed.SqliteAccess.Supported)
+            {
+                completed = BuildBlockedSnapshot(refreshed, providers, selectedProvider);
+                return;
+            }
+            if (!providers.Any(item => string.Equals(item.Id, selectedProvider, StringComparison.Ordinal)))
+            {
+                completed = initial with
+                {
+                    Activity = SimpleActivity.Failed,
+                    Message = "所选 Provider 已不在当前配置中，请刷新后重试。",
+                    Details = string.Empty,
+                    CanExecute = false,
+                    LastResult = null
+                };
+                return;
+            }
+
+            ApplicationWriteIntent intent = string.Equals(
+                selectedProvider,
+                refreshed.CurrentProvider.Provider,
+                StringComparison.Ordinal)
+                ? new SyncIntent(
+                    _codexHome,
+                    null,
+                    selectedProvider,
+                    AppConstants.DefaultBackupRetentionCount)
+                : new SwitchIntent(
+                    _codexHome,
+                    null,
+                    selectedProvider,
+                    new FollowProviderModelSelection(),
+                    AppConstants.DefaultBackupRetentionCount);
+
+            SyncResult result = await _service.ExecuteAsync(intent, cancellationToken);
+            SimpleSyncSummary summary = new(
+                result.TargetProvider,
+                result.ChangedSessionFiles,
+                result.SqliteRowsUpdated,
+                result.SkippedLockedRolloutFiles.Count + result.SkippedUnreadableRolloutFiles.Count,
+                result.BackupDir);
+            completed = initial with
+            {
+                Activity = summary.SkippedRolloutFiles == 0 ? SimpleActivity.Success : SimpleActivity.Incomplete,
+                CurrentProviderId = result.TargetProvider,
+                Providers = providers,
+                SelectedProviderId = selectedProvider,
+                Message = summary.SkippedRolloutFiles == 0
+                    ? "同步完成，现在可以重新打开 Codex。"
+                    : "同步未完全完成，部分会话文件未写入。",
+                Details = summary.SkippedRolloutFiles == 0
+                    ? result.BackupDir
+                    : $"跳过 {summary.SkippedRolloutFiles} 个会话文件，请关闭占用后再次同步。{Environment.NewLine}{result.BackupDir}",
+                EncryptedContentWarning = result.EncryptedContentWarning ?? initial.EncryptedContentWarning,
+                LastResult = summary,
+                CanExecute = false
+            };
+        }
+        catch (SimpleApplicationException exception) when (exception.RecoveryRequired)
+        {
+            completed = initial with
+            {
+                Activity = SimpleActivity.RecoveryRequired,
+                Message = "操作失败，需要使用备份恢复。",
+                Details = FormatApplicationErrors(exception.Errors),
+                CanExecute = false,
+                LastResult = null
+            };
+        }
+        catch (SimpleApplicationException exception) when (exception.Errors.Any(item =>
+            string.Equals(item.Code, "target_busy", StringComparison.Ordinal)))
+        {
+            completed = initial with
+            {
+                Activity = SimpleActivity.Blocked,
+                Message = "目标文件正在使用，请手动关闭 Codex 后再试。",
+                Details = FormatApplicationErrors(exception.Errors),
+                CanExecute = false,
+                LastResult = null
+            };
+        }
+        catch (Exception exception)
+        {
+            completed = initial with
+            {
+                Activity = SimpleActivity.Failed,
+                Message = "同步失败。",
+                Details = exception.Message,
+                CanExecute = false,
+                LastResult = null
+            };
+        }
+        finally
+        {
+            if (Volatile.Read(ref _activeOperations) > 0)
+            {
+                CompleteExecution(completed);
+            }
+            Interlocked.Exchange(ref _executeInProgress, 0);
+        }
+    }
+
+    private Task<StatusSnapshot> ReadStatusAsync(string selectedProvider, CancellationToken cancellationToken) =>
+        _service.GetStatusAsync(_codexHome, cancellationToken);
+
+    private static string FormatApplicationErrors(IReadOnlyList<ApplicationError> errors) =>
+        string.Join(Environment.NewLine, errors.Select(item =>
+            string.IsNullOrWhiteSpace(item.EvidencePath)
+                ? item.Message
+                : item.Message + Environment.NewLine + item.EvidencePath));
 
     private SimpleSwitcherSnapshot BuildRecoverySnapshot(
         StatusSnapshot status,
@@ -228,6 +381,44 @@ internal sealed class SimpleSwitcherController
     }
 
     private void CompleteRefresh(SimpleSwitcherSnapshot completed)
+    {
+        SimpleSwitcherSnapshot published;
+        lock (_snapshotLock)
+        {
+            Interlocked.Decrement(ref _activeOperations);
+            published = completed with
+            {
+                CanRefresh = Volatile.Read(ref _activeOperations) == 0,
+                CanExecute = CanExecute(
+                    completed.Activity,
+                    completed.SelectedProviderId,
+                    completed.Details)
+            };
+            _snapshot = published;
+        }
+        NotifySnapshotChanged(published);
+    }
+
+    private void BeginExecution()
+    {
+        SimpleSwitcherSnapshot published;
+        lock (_snapshotLock)
+        {
+            Interlocked.Increment(ref _activeOperations);
+            published = _snapshot with
+            {
+                Activity = SimpleActivity.Executing,
+                Message = "正在同步...",
+                Details = string.Empty,
+                CanRefresh = false,
+                CanExecute = false
+            };
+            _snapshot = published;
+        }
+        NotifySnapshotChanged(published);
+    }
+
+    private void CompleteExecution(SimpleSwitcherSnapshot completed)
     {
         SimpleSwitcherSnapshot published;
         lock (_snapshotLock)
