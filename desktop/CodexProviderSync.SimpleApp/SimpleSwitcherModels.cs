@@ -26,6 +26,7 @@ internal sealed record SimpleSwitcherSnapshot
     internal SimpleActivity Activity { get; init; } = SimpleActivity.Loading;
     internal string CodexHome { get; init; } = string.Empty;
     internal string? CurrentProviderId { get; init; }
+    internal bool? SqliteSupported { get; init; }
     internal IReadOnlyList<SimpleProviderItem> Providers { get; init; } = [];
     internal string? SelectedProviderId { get; init; }
     internal string Message { get; init; } = "正在读取状态...";

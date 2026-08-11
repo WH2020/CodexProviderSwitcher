@@ -69,6 +69,41 @@ public sealed class SimpleSettingsStoreTests
             candidate => !string.Equals(candidate, unrelated, StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Load_AccessOrIoFailure_ReturnsDefaults(bool unauthorized)
+    {
+        string path = NewSettingsPath();
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, "{}");
+        SimpleSettingsStore store = new(
+            path,
+            (_, _) => Task.FromException<string>(unauthorized
+                ? new UnauthorizedAccessException("denied")
+                : new IOException("read failed")));
+
+        SimpleUserSettings actual = await store.LoadAsync();
+
+        Assert.Same(SimpleUserSettings.Default, actual);
+    }
+
+    [Fact]
+    public async Task Load_Cancellation_Propagates()
+    {
+        string path = NewSettingsPath();
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, "{}");
+        using CancellationTokenSource cancellation = new();
+        cancellation.Cancel();
+        SimpleSettingsStore store = new(
+            path,
+            (_, token) => Task.FromCanceled<string>(token));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            store.LoadAsync(cancellation.Token));
+    }
+
     private static string NewSettingsPath() => Path.Combine(
         Path.GetTempPath(),
         "codex-switcher-settings-" + Guid.NewGuid().ToString("N"),

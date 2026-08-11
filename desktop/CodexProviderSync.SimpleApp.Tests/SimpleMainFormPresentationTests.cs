@@ -75,6 +75,82 @@ public sealed class SimpleMainFormPresentationTests
         }
     }
 
+    [Fact]
+    public void InitialSnapshotDisplaysSqliteAsLoading()
+    {
+        using SimpleMainForm form = CreateForm();
+
+        Assert.Equal("读取中", Field<Label>(form, "_sqliteStatusValue").Text);
+    }
+
+    [Theory]
+    [InlineData(true, "可用")]
+    [InlineData(false, "不支持")]
+    public async Task ExplicitSqliteSupportControlsDisplayedStatus(bool supported, string expected)
+    {
+        SimpleSwitcherController controller = Controller(Status(
+            current: "openai",
+            configured: ["openai"],
+            sqliteSupported: supported));
+        await controller.RefreshAsync();
+        using SimpleMainForm form = Form(controller);
+
+        Assert.Equal(supported, controller.Snapshot.SqliteSupported);
+        Assert.Equal(expected, Field<Label>(form, "_sqliteStatusValue").Text);
+    }
+
+    [Fact]
+    public async Task FirstFailedRefreshDisplaysSqliteAsUnknown()
+    {
+        SimpleSwitcherController controller = new(
+            new ThrowingStatusProviderService(),
+            new FakeProcessProbe(),
+            @"C:\fixture\.codex");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => controller.RefreshAsync());
+        using SimpleMainForm form = Form(controller);
+
+        Assert.Null(controller.Snapshot.SqliteSupported);
+        Assert.Equal("未知", Field<Label>(form, "_sqliteStatusValue").Text);
+    }
+
+    [Fact]
+    public async Task LongProviderIsEllipsizedWithoutEscapingTheStatusRow()
+    {
+        string provider = new('p', 80);
+        SimpleSwitcherController controller = Controller(Status(
+            current: provider,
+            configured: [provider],
+            sqliteSupported: true));
+        await controller.RefreshAsync();
+        using SimpleMainForm form = Form(controller);
+        form.Show();
+        form.Size = form.MinimumSize;
+        PerformLayoutRecursively(form);
+
+        Label current = Field<Label>(form, "_currentProviderValue");
+        Label sqliteCaption = Descendants(form)
+            .OfType<Label>()
+            .Single(label => label.Text == "SQLite：");
+        Rectangle currentBounds = BoundsIn(form, current);
+        Rectangle sqliteBounds = BoundsIn(form, sqliteCaption);
+
+        Assert.False(current.AutoSize);
+        Assert.True(current.AutoEllipsis);
+        Assert.Equal(AutoScaleMode.Dpi, form.AutoScaleMode);
+        Assert.Equal(provider, Field<ToolTip>(form, "_toolTip").GetToolTip(current));
+        Assert.True(form.ClientRectangle.Contains(currentBounds));
+        Assert.False(currentBounds.IntersectsWith(sqliteBounds));
+
+        form.Scale(new SizeF(1.25F, 1.25F));
+        form.Size = new Size(650, 475);
+        PerformLayoutRecursively(form);
+
+        currentBounds = BoundsIn(form, current);
+        sqliteBounds = BoundsIn(form, sqliteCaption);
+        Assert.True(form.ClientRectangle.Contains(currentBounds));
+        Assert.False(currentBounds.IntersectsWith(sqliteBounds));
+    }
+
     private static SimpleMainForm CreateForm()
     {
         FakeSimpleProviderService service = new(Status(
@@ -91,6 +167,23 @@ public sealed class SimpleMainFormPresentationTests
             "settings.json");
         return new SimpleMainForm(controller, new SimpleSettingsStore(settingsPath));
     }
+
+    private static SimpleSwitcherController Controller(CodexProviderSync.Core.StatusSnapshot status) => new(
+        new FakeSimpleProviderService(status),
+        new FakeProcessProbe(),
+        @"C:\fixture\.codex");
+
+    private static SimpleMainForm Form(SimpleSwitcherController controller)
+    {
+        string settingsPath = Path.Combine(
+            Path.GetTempPath(),
+            "codex-switcher-form-" + Guid.NewGuid().ToString("N"),
+            "settings.json");
+        return new SimpleMainForm(controller, new SimpleSettingsStore(settingsPath));
+    }
+
+    private static Rectangle BoundsIn(Control root, Control child) =>
+        root.RectangleToClient(child.RectangleToScreen(child.ClientRectangle));
 
     private static T Field<T>(object target, string name) where T : class =>
         Assert.IsType<T>(target.GetType()
@@ -116,5 +209,19 @@ public sealed class SimpleMainFormPresentationTests
         {
             PerformLayoutRecursively(child);
         }
+    }
+
+    private sealed class ThrowingStatusProviderService : ISimpleProviderService
+    {
+        public Task<CodexProviderSync.Core.StatusSnapshot> GetStatusAsync(
+            string codexHome,
+            CancellationToken cancellationToken = default) =>
+            Task.FromException<CodexProviderSync.Core.StatusSnapshot>(
+                new InvalidOperationException("status failed"));
+
+        public Task<CodexProviderSync.Core.SyncResult> ExecuteAsync(
+            CodexProviderSync.Application.ApplicationWriteIntent intent,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

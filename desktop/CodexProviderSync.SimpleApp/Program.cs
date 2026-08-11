@@ -38,14 +38,7 @@ internal static class Program
         }
         catch (Exception error)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(paths.StartupErrorPath)!);
-            File.WriteAllText(paths.StartupErrorPath, error.ToString());
-            MessageBox.Show(
-                $"Codex Provider Switcher 启动失败。{Environment.NewLine}{Environment.NewLine}" +
-                $"详细信息已写入：{Environment.NewLine}{paths.StartupErrorPath}",
-                "Codex Provider Switcher",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
+            SimpleStartupErrorReporter.Report(error, paths);
         }
     }
 }

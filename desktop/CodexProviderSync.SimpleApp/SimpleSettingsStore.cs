@@ -26,10 +26,20 @@ internal sealed class SimpleSettingsStore
         WriteIndented = true
     };
     private readonly string _path;
+    private readonly Func<string, CancellationToken, Task<string>> _readAllTextAsync;
 
     internal SimpleSettingsStore(string path)
+        : this(path, File.ReadAllTextAsync)
+    {
+    }
+
+    internal SimpleSettingsStore(
+        string path,
+        Func<string, CancellationToken, Task<string>> readAllTextAsync)
     {
         _path = Path.GetFullPath(path);
+        _readAllTextAsync = readAllTextAsync
+            ?? throw new ArgumentNullException(nameof(readAllTextAsync));
     }
 
     internal async Task<SimpleUserSettings> LoadAsync(
@@ -41,7 +51,7 @@ internal sealed class SimpleSettingsStore
         }
         try
         {
-            string json = await File.ReadAllTextAsync(_path, cancellationToken)
+            string json = await _readAllTextAsync(_path, cancellationToken)
                 .ConfigureAwait(false);
             return JsonSerializer.Deserialize<SimpleUserSettings>(json, JsonOptions)
                 ?? SimpleUserSettings.Default;
@@ -51,6 +61,10 @@ internal sealed class SimpleSettingsStore
             return SimpleUserSettings.Default;
         }
         catch (IOException)
+        {
+            return SimpleUserSettings.Default;
+        }
+        catch (UnauthorizedAccessException)
         {
             return SimpleUserSettings.Default;
         }

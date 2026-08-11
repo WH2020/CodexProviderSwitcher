@@ -1,12 +1,22 @@
+using System.Runtime.InteropServices;
+
 namespace CodexProviderSync.SimpleApp;
 
 internal sealed class SimpleMainForm : Form
 {
     private readonly SimpleSwitcherController _controller;
-    private readonly SimpleSettingsStore _settings;
+    private readonly Func<CancellationToken, Task<SimpleUserSettings>> _loadSettings;
+    private readonly Func<SimpleUserSettings, CancellationToken, Task> _saveSettings;
+    private readonly Action<string> _clipboardWriter;
     private bool _rendering;
 
-    private readonly Label _currentProviderValue = new() { AutoSize = true };
+    private readonly Label _currentProviderValue = new()
+    {
+        AutoSize = false,
+        AutoEllipsis = true,
+        Dock = DockStyle.Fill,
+        TextAlign = ContentAlignment.MiddleLeft
+    };
     private readonly Label _sqliteStatusValue = new() { AutoSize = true };
     private readonly ComboBox _providerCombo = new()
     {
@@ -28,13 +38,19 @@ internal sealed class SimpleMainForm : Form
         Dock = DockStyle.Fill,
         DetectUrls = false
     };
+    private readonly ToolTip _toolTip = new();
 
     internal SimpleMainForm(
         SimpleSwitcherController controller,
-        SimpleSettingsStore settings)
+        SimpleSettingsStore settings,
+        Func<CancellationToken, Task<SimpleUserSettings>>? settingsLoader = null,
+        Func<SimpleUserSettings, CancellationToken, Task>? settingsSaver = null,
+        Action<string>? clipboardWriter = null)
     {
         _controller = controller;
-        _settings = settings;
+        _loadSettings = settingsLoader ?? settings.LoadAsync;
+        _saveSettings = settingsSaver ?? settings.SaveAsync;
+        _clipboardWriter = clipboardWriter ?? Clipboard.SetText;
 
         Text = "Codex Provider Switcher";
         Size = new Size(560, 420);
@@ -73,6 +89,7 @@ internal sealed class SimpleMainForm : Form
         if (disposing)
         {
             _controller.SnapshotChanged -= ControllerOnSnapshotChanged;
+            _toolTip.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -87,7 +104,7 @@ internal sealed class SimpleMainForm : Form
             Padding = new Padding(14)
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52F));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -96,8 +113,8 @@ internal sealed class SimpleMainForm : Form
 
         TableLayoutPanel statusLayout = new()
         {
-            AutoSize = true,
             ColumnCount = 4,
+            RowCount = 1,
             Dock = DockStyle.Fill,
             Margin = new Padding(0, 0, 0, 10)
         };
@@ -162,7 +179,19 @@ internal sealed class SimpleMainForm : Form
 
     private async void FormOnShown(object? sender, EventArgs eventArgs)
     {
-        SimpleUserSettings settings = await _settings.LoadAsync();
+        SimpleUserSettings settings;
+        try
+        {
+            settings = await _loadSettings(CancellationToken.None);
+        }
+        catch
+        {
+            settings = SimpleUserSettings.Default;
+        }
+        if (IsDisposed || Disposing)
+        {
+            return;
+        }
         RestoreWindowBounds(settings.WindowBounds);
         await RefreshSafelyAsync(settings.LastProvider);
     }
@@ -210,7 +239,10 @@ internal sealed class SimpleMainForm : Form
         }
         catch
         {
-            Render(_controller.Snapshot);
+            if (!IsDisposed && !Disposing)
+            {
+                Render(_controller.Snapshot);
+            }
         }
     }
 
@@ -247,7 +279,15 @@ internal sealed class SimpleMainForm : Form
                 .Where(value => !string.IsNullOrWhiteSpace(value)));
         if (!string.IsNullOrWhiteSpace(text))
         {
-            Clipboard.SetText(text);
+            try
+            {
+                _clipboardWriter(text);
+            }
+            catch (ExternalException)
+            {
+                _stateLabel.Text = "复制失败，请重试。";
+                _stateLabel.ForeColor = Color.Firebrick;
+            }
         }
     }
 
@@ -259,16 +299,29 @@ internal sealed class SimpleMainForm : Form
         }
         if (InvokeRequired)
         {
+            if (!IsHandleCreated)
+            {
+                return;
+            }
             try
             {
-                BeginInvoke(() => Render(_controller.Snapshot));
+                BeginInvoke((Action)(() =>
+                {
+                    if (!IsDisposed && !Disposing)
+                    {
+                        Render(_controller.Snapshot);
+                    }
+                }));
             }
-            catch (InvalidOperationException) when (IsDisposed || Disposing)
+            catch (InvalidOperationException)
             {
             }
             return;
         }
-        Render(_controller.Snapshot);
+        if (!IsDisposed && !Disposing)
+        {
+            Render(_controller.Snapshot);
+        }
     }
 
     private void Render(SimpleSwitcherSnapshot snapshot)
@@ -277,6 +330,7 @@ internal sealed class SimpleMainForm : Form
         try
         {
             _currentProviderValue.Text = snapshot.CurrentProviderId ?? "—";
+            _toolTip.SetToolTip(_currentProviderValue, snapshot.CurrentProviderId ?? string.Empty);
             _sqliteStatusValue.Text = SqliteStatus(snapshot);
 
             string[] providerIds = snapshot.Providers.Select(item => item.Id).ToArray();
@@ -313,14 +367,16 @@ internal sealed class SimpleMainForm : Form
 
     private static string SqliteStatus(SimpleSwitcherSnapshot snapshot)
     {
-        if (snapshot.Activity == SimpleActivity.Loading && snapshot.CurrentProviderId is null)
+        if (snapshot.Activity == SimpleActivity.Loading)
         {
             return "读取中";
         }
-        return snapshot.Activity == SimpleActivity.Blocked
-            && snapshot.Message.Contains("SQLite", StringComparison.OrdinalIgnoreCase)
-            ? "不支持"
-            : "可用";
+        return snapshot.SqliteSupported switch
+        {
+            true => "可用",
+            false => "不支持",
+            null => "未知"
+        };
     }
 
     private static Color StateColor(SimpleActivity activity) => activity switch
@@ -355,6 +411,14 @@ internal sealed class SimpleMainForm : Form
 
     private void FormOnFormClosing(object? sender, FormClosingEventArgs eventArgs)
     {
+        if (_controller.Snapshot.Activity == SimpleActivity.Executing)
+        {
+            eventArgs.Cancel = true;
+            _stateLabel.Text = "操作正在进行，请在操作完成后再关闭。";
+            _stateLabel.ForeColor = Color.DarkOrange;
+            return;
+        }
+
         Rectangle bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
         SimpleUserSettings settings = new(
             _providerCombo.SelectedItem as string ?? _controller.Snapshot.SelectedProviderId,
@@ -368,12 +432,9 @@ internal sealed class SimpleMainForm : Form
             });
         try
         {
-            _settings.SaveAsync(settings).GetAwaiter().GetResult();
+            _saveSettings(settings, CancellationToken.None).GetAwaiter().GetResult();
         }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
+        catch
         {
         }
     }

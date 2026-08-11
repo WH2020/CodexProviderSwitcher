@@ -54,3 +54,40 @@ dotnet test CodexProviderSync.sln -c Release --no-restore
 
 - 未做 Task 6 的跨模块/启动集成测试与 Task 7 的发布打包；这些明确保留给后续任务。
 - 本任务验证了 presentation 布局和全量单元测试，未在多显示器、非 100% DPI 的真实桌面上进行人工视觉巡检。
+
+## 独立复核修复
+
+- 执行中关窗：`FormClosing` 在 controller 为 `Executing` 时设置 `Cancel=true`，状态行提示“操作正在进行，请在操作完成后再关闭。”，不保存设置也不释放窗口。gated 写入测试分别覆盖释放后 `Success` 和 `RecoveryRequired`，完成后再次关窗成功。
+- 设置与 Shown 边界：`SimpleSettingsStore.LoadAsync` 将 `UnauthorizedAccessException` 与 `IOException` 一样降级为默认设置，仍让 `OperationCanceledException` 传播；Form 的设置加载失败降级默认并继续 Refresh，Refresh 异常由 controller 的 `Failed` 快照呈现且不逃出 `async void`。
+- 启动错误边界：新增 `SimpleStartupErrorReporter`。目录创建/日志写入失败不会替换原始启动异常；对话框明确显示日志路径或“启动错误日志写入失败”，对话框自身失败被最终边界吞掉。测试通过注入 writer/dialog，不弹真实对话框。
+- SQLite 状态：`SimpleSwitcherSnapshot` 新增 nullable `SqliteSupported`，controller 从 `StatusSnapshot.SqliteAccess.Supported` 填充并由 record 状态流保留。UI 只按强类型值显示“可用”或“不支持”；Loading 显示“读取中”，首次失败/未知显示“未知”，不再解析 Message 文案。
+- 超长 Provider：当前 Provider 改为固定单行 Label，启用 `AutoEllipsis`，完整值放入 ToolTip；状态行为固定高度。80 字符 Provider 在 `520x380` 及 1.25 倍模拟 DPI 缩放后均不越界、不覆盖 SQLite 区域，且 Form 保持 `AutoScaleMode.Dpi`。
+- 剪贴板：通过最小 `Action<string>` delegate 封装 `Clipboard.SetText`；`ExternalException` 转为状态行“复制失败，请重试。”，不进入 UI 未处理异常。
+- 额外生命周期：排队的 `BeginInvoke` 回调在 Dispose 后检查窗体生命周期，不再访问已释放控件；设置保存的任意异常不阻止窗口关闭。延迟 Shown/Refresh 在释放后也直接返回。
+
+## 复核 RED / GREEN
+
+- 有效 RED：新增复核测试后，编译因缺少 `SimpleStartupErrorReporter`、Form settings/clipboard 测试接缝、Settings 读取 delegate 构造和 `SimpleSwitcherSnapshot.SqliteSupported` 等得到预期 CS0103、CS1729、CS1061。
+- GREEN 聚焦命令：settings、guard、presentation、lifecycle、startup reporter 共 28/28 通过。
+- GREEN SimpleApp：74/74 通过。
+- GREEN 解决方案：`dotnet test CodexProviderSync.sln -c Release --no-restore` 成功，440 项通过；1 项真实 Windows WSL SQLite Home 安全测试按既有条件跳过。
+
+## 最新验证命令
+
+```powershell
+dotnet test desktop\CodexProviderSync.SimpleApp.Tests\CodexProviderSync.SimpleApp.Tests.csproj `
+  -c Release `
+  --filter "FullyQualifiedName~SimpleSettingsStoreTests|FullyQualifiedName~SimpleInstanceGuardTests|FullyQualifiedName~SimpleMainFormPresentationTests|FullyQualifiedName~SimpleMainFormLifecycleTests|FullyQualifiedName~SimpleStartupErrorReporterTests"
+
+dotnet test desktop\CodexProviderSync.SimpleApp.Tests\CodexProviderSync.SimpleApp.Tests.csproj -c Release
+
+dotnet test CodexProviderSync.sln -c Release --no-restore
+```
+
+三次测试均使用工作区本地 `.dotnet`，并将其目录置于 `PATH` 首位。
+
+## 复核后遗留风险
+
+- 依照任务边界，本轮没有实施 Task 6 的真实 Core fault injection。特别是 Core 写入过程中真实 I/O 故障、恢复证据落盘失败和进程级异常退出后的 UI/恢复联动，仍需在 Task 6 集成验证中覆盖。
+- 非 100% DPI 已通过 1.25 倍程序化缩放验证稳定布局约束；多显示器混合 DPI 的人工视觉巡检仍未执行。
+- 未新增任何 auth.json、API key、base_url、账号、备份恢复/清理、检查更新、监控、自启动或 Codex Home 编辑控件；未加入说明性教程文案，Form 未直接调用 Core/Application。
