@@ -139,6 +139,74 @@ public sealed class SimpleMainFormLifecycleTests
         Assert.Null(error);
     }
 
+    [Fact]
+    public void ClosingWhileInitialRefreshIsPendingPreservesLoadedProvider()
+    {
+        GatedStatusProviderService service = new();
+        SimpleSwitcherController controller = Controller(service);
+        SimpleUserSettings? saved = null;
+        using SimpleMainForm form = Form(
+            controller,
+            settingsLoader: _ => Task.FromResult(new SimpleUserSettings("custom", null)),
+            settingsSaver: (settings, _) =>
+            {
+                saved = settings;
+                return Task.CompletedTask;
+            });
+        form.Show();
+        System.Windows.Forms.Application.DoEvents();
+
+        Assert.True(service.WaitForRequest(TimeSpan.FromSeconds(1)));
+        Assert.Equal(SimpleActivity.Loading, controller.Snapshot.Activity);
+        Assert.Null(controller.Snapshot.SelectedProviderId);
+
+        form.Close();
+
+        Assert.True(form.IsDisposed);
+        Assert.NotNull(saved);
+        Assert.Equal("custom", saved.LastProvider);
+
+        service.Release();
+        PumpUntil(() => controller.Snapshot.Activity == SimpleActivity.Ready);
+    }
+
+    [Fact]
+    public void ClosingBeforeSettingsLoadCompletesSkipsSaving()
+    {
+        TaskCompletionSource<SimpleUserSettings> load = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        ManualResetEventSlim loadRequested = new();
+        CountingStatusProviderService service = new();
+        SimpleSwitcherController controller = Controller(service);
+        int saves = 0;
+        using SimpleMainForm form = Form(
+            controller,
+            settingsLoader: _ =>
+            {
+                loadRequested.Set();
+                return load.Task;
+            },
+            settingsSaver: (_, _) =>
+            {
+                saves++;
+                return Task.CompletedTask;
+            });
+        form.Show();
+        System.Windows.Forms.Application.DoEvents();
+
+        Assert.True(loadRequested.Wait(TimeSpan.FromSeconds(1)));
+
+        form.Close();
+
+        Assert.True(form.IsDisposed);
+        Assert.Equal(0, saves);
+
+        Assert.True(load.TrySetResult(new SimpleUserSettings("custom", null)));
+        PumpUntil(() => load.Task.IsCompleted);
+        Assert.Equal(0, service.StatusCalls);
+        Assert.Equal(0, saves);
+    }
+
     private static SimpleSwitcherController Controller(ISimpleProviderService service) => new(
         service,
         new FakeProcessProbe(),
@@ -232,6 +300,48 @@ public sealed class SimpleMainFormLifecycleTests
             string codexHome,
             CancellationToken cancellationToken = default) =>
             Task.FromException<StatusSnapshot>(new InvalidOperationException("status failed"));
+
+        public Task<SyncResult> ExecuteAsync(
+            ApplicationWriteIntent intent,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class GatedStatusProviderService : ISimpleProviderService
+    {
+        private readonly ManualResetEventSlim _requested = new();
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<StatusSnapshot> GetStatusAsync(
+            string codexHome,
+            CancellationToken cancellationToken = default)
+        {
+            _requested.Set();
+            await _release.Task.WaitAsync(cancellationToken);
+            return Status(current: "openai", configured: ["openai", "custom"]);
+        }
+
+        public Task<SyncResult> ExecuteAsync(
+            ApplicationWriteIntent intent,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        internal bool WaitForRequest(TimeSpan timeout) => _requested.Wait(timeout);
+        internal void Release() => Assert.True(_release.TrySetResult());
+    }
+
+    private sealed class CountingStatusProviderService : ISimpleProviderService
+    {
+        internal int StatusCalls { get; private set; }
+
+        public Task<StatusSnapshot> GetStatusAsync(
+            string codexHome,
+            CancellationToken cancellationToken = default)
+        {
+            StatusCalls++;
+            return Task.FromResult(Status(current: "openai", configured: ["openai", "custom"]));
+        }
 
         public Task<SyncResult> ExecuteAsync(
             ApplicationWriteIntent intent,

@@ -91,3 +91,27 @@ dotnet test CodexProviderSync.sln -c Release --no-restore
 - 依照任务边界，本轮没有实施 Task 6 的真实 Core fault injection。特别是 Core 写入过程中真实 I/O 故障、恢复证据落盘失败和进程级异常退出后的 UI/恢复联动，仍需在 Task 6 集成验证中覆盖。
 - 非 100% DPI 已通过 1.25 倍程序化缩放验证稳定布局约束；多显示器混合 DPI 的人工视觉巡检仍未执行。
 - 未新增任何 auth.json、API key、base_url、账号、备份恢复/清理、检查更新、监控、自启动或 Codex Home 编辑控件；未加入说明性教程文案，Form 未直接调用 Core/Application。
+
+## 终审 Minor 修复：启动期间保留 Provider 偏好
+
+- Form 记录 `_settingsLoadCompleted` 与 `_loadedLastProvider`。设置尚未完成加载时关闭窗口会跳过保存，避免用未初始化 UI 状态覆盖已有设置。
+- 设置已加载但初始 Refresh 仍 pending 时，保存顺序为 combo 当前选择、controller 当前选择、已加载 `LastProvider`；因此会保留 `custom` 而不是写入 `null`。
+- Refresh 或用户选择完成后，combo/controller 仍优先于加载值，不改变正常保存语义。
+- gated 设置/状态测试的所有等待均有明确超时和 `Assert.True`，异步完成通过 `PumpUntil` 的最终断言确认，没有静默 timeout。
+
+### Minor RED / GREEN
+
+- 有效 RED：生命周期聚焦测试 9 项中新增 2 项失败。Refresh pending 关窗实际保存 `null`（期望 `custom`）；设置加载 pending 关窗实际保存 1 次（期望 0 次）。
+- GREEN 生命周期聚焦：`FullyQualifiedName~SimpleMainFormLifecycleTests` 通过 9/9。
+- GREEN SimpleApp：76/76。
+- GREEN 解决方案：442 项通过；1 项真实 Windows WSL SQLite Home 安全测试按既有条件跳过。
+
+```powershell
+dotnet test desktop\CodexProviderSync.SimpleApp.Tests\CodexProviderSync.SimpleApp.Tests.csproj `
+  -c Release `
+  --filter "FullyQualifiedName~SimpleMainFormLifecycleTests"
+
+dotnet test desktop\CodexProviderSync.SimpleApp.Tests\CodexProviderSync.SimpleApp.Tests.csproj -c Release
+
+dotnet test CodexProviderSync.sln -c Release --no-restore
+```

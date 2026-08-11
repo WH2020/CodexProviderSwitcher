@@ -9,6 +9,8 @@ internal sealed class SimpleMainForm : Form
     private readonly Func<SimpleUserSettings, CancellationToken, Task> _saveSettings;
     private readonly Action<string> _clipboardWriter;
     private bool _rendering;
+    private bool _settingsLoadCompleted;
+    private string? _loadedLastProvider;
 
     private readonly Label _currentProviderValue = new()
     {
@@ -188,6 +190,8 @@ internal sealed class SimpleMainForm : Form
         {
             settings = SimpleUserSettings.Default;
         }
+        _loadedLastProvider = settings.LastProvider;
+        _settingsLoadCompleted = true;
         if (IsDisposed || Disposing)
         {
             return;
@@ -418,10 +422,16 @@ internal sealed class SimpleMainForm : Form
             _stateLabel.ForeColor = Color.DarkOrange;
             return;
         }
+        if (!_settingsLoadCompleted)
+        {
+            return;
+        }
 
         Rectangle bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
         SimpleUserSettings settings = new(
-            _providerCombo.SelectedItem as string ?? _controller.Snapshot.SelectedProviderId,
+            _providerCombo.SelectedItem as string
+                ?? _controller.Snapshot.SelectedProviderId
+                ?? _loadedLastProvider,
             new WindowBoundsState
             {
                 X = bounds.X,
