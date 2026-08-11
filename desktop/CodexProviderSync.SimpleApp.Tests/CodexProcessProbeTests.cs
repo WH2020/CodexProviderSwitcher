@@ -36,4 +36,20 @@ public sealed class CodexProcessProbeTests
             [new CodexProcessInfo("codex", 7), new CodexProcessInfo("app-server", 9)],
             probe.FindRunning());
     }
+
+    [Fact]
+    public void FindRunning_DeduplicatesProcessIds()
+    {
+        CodexProcessProbe probe = new(
+            currentProcessId: 42,
+            snapshot: () =>
+            [
+                new("codex", 7),
+                new("CODEX", 7)
+            ]);
+
+        Assert.Equal(
+            [new CodexProcessInfo("codex", 7)],
+            probe.FindRunning());
+    }
 }
