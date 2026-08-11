@@ -117,6 +117,149 @@ public sealed class SimpleSwitcherControllerExecutionTests
         Assert.True(controller.Snapshot.CanRefresh);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_EarlyReturnDuringPendingRefreshDoesNotCompleteTheRefresh()
+    {
+        TaskCompletionSource<StatusSnapshot> pendingStatus = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        RecordingSimpleProviderService service = new(_ => pendingStatus.Task, _ => Task.FromResult(SuccessResult("openai")));
+        SimpleSwitcherController controller = Controller(service, new FakeProcessProbe());
+
+        Task refresh = controller.RefreshAsync();
+        await service.StatusStarted.Task;
+        await controller.ExecuteAsync();
+
+        pendingStatus.SetResult(Status("openai", ["openai", "custom"]));
+        await refresh;
+
+        Assert.Equal(SimpleActivity.Ready, controller.Snapshot.Activity);
+        Assert.True(controller.Snapshot.CanRefresh);
+        Assert.True(controller.Snapshot.CanExecute);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RejectsRefreshAndSelectionWhileWriteIsPending()
+    {
+        TaskCompletionSource<SyncResult> pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        RecordingSimpleProviderService service = new(Status("openai", ["openai", "custom"]), _ => pending.Task);
+        SimpleSwitcherController controller = await ReadyCustomController(service);
+
+        Task execution = controller.ExecuteAsync();
+        await service.WriteStarted.Task;
+        await controller.RefreshAsync();
+
+        Assert.False(controller.SelectProvider("openai"));
+        Assert.Equal(SimpleActivity.Executing, controller.Snapshot.Activity);
+        Assert.Equal("custom", controller.Snapshot.SelectedProviderId);
+        pending.SetResult(SuccessResult("custom"));
+        await execution;
+
+        Assert.Equal(SimpleActivity.Success, controller.Snapshot.Activity);
+        Assert.Equal("custom", controller.Snapshot.SelectedProviderId);
+        Assert.True(Assert.Single(controller.Snapshot.Providers, item => item.Id == "custom").IsCurrent);
+        Assert.Contains("现在可以重新打开 Codex", controller.Snapshot.Message);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_DoesNotReadStatusOrWriteWhenProcessBlocks()
+    {
+        RecordingSimpleProviderService service = ServiceWithReadyStatus("openai", "custom");
+        SimpleSwitcherController controller = Controller(service, new FakeProcessProbe([new CodexProcessInfo("codex", 1)]));
+        await controller.RefreshAsync();
+
+        await controller.ExecuteAsync();
+
+        Assert.Equal(1, service.StatusCalls);
+        Assert.Empty(service.ExecutedIntents);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ReportsUnreadableRolloutsAsIncomplete()
+    {
+        RecordingSimpleProviderService service = new(Status("openai", ["openai", "custom"]), _ => Task.FromResult(SuccessResult(
+            "custom", skippedUnreadable: [@"C:\fixture\bad.jsonl"])));
+        SimpleSwitcherController controller = await ReadyCustomController(service);
+
+        await controller.ExecuteAsync();
+
+        Assert.Equal(SimpleActivity.Incomplete, controller.Snapshot.Activity);
+        Assert.Equal(1, controller.Snapshot.LastResult!.SkippedRolloutFiles);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_FailsWithoutWritingWhenStatusRemovesSelection()
+    {
+        int statusCall = 0;
+        RecordingSimpleProviderService service = new(_ => Task.FromResult(++statusCall == 1
+            ? Status("openai", ["openai", "custom"])
+            : Status("openai", ["openai"])), _ => Task.FromResult(SuccessResult("custom")));
+        SimpleSwitcherController controller = await ReadyCustomController(service);
+
+        await controller.ExecuteAsync();
+
+        Assert.Equal(SimpleActivity.Failed, controller.Snapshot.Activity);
+        Assert.Empty(service.ExecutedIntents);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MapsPendingAndUnsupportedStatusBeforeWriting()
+    {
+        int statusCall = 0;
+        RecordingSimpleProviderService recoveryService = new(_ => Task.FromResult(++statusCall == 1
+            ? Status("openai", ["openai", "custom"])
+            : Status("openai", ["openai", "custom"], pendingTransactions: [new TransactionRecoveryInfo("id", "pending", @"C:\backup", @"C:\journal")])), _ => Task.FromResult(SuccessResult("custom")));
+        SimpleSwitcherController recovery = await ReadyCustomController(recoveryService);
+        await recovery.ExecuteAsync();
+        Assert.Equal(SimpleActivity.RecoveryRequired, recovery.Snapshot.Activity);
+        Assert.Empty(recoveryService.ExecutedIntents);
+
+        statusCall = 0;
+        RecordingSimpleProviderService unsupportedService = new(_ => Task.FromResult(++statusCall == 1
+            ? Status("openai", ["openai", "custom"])
+            : Status("openai", ["openai", "custom"], sqliteSupported: false)), _ => Task.FromResult(SuccessResult("custom")));
+        SimpleSwitcherController unsupported = await ReadyCustomController(unsupportedService);
+        await unsupported.ExecuteAsync();
+        Assert.Equal(SimpleActivity.Blocked, unsupported.Snapshot.Activity);
+        Assert.Empty(unsupportedService.ExecutedIntents);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MapsGenericFailureWithoutLosingSelection()
+    {
+        RecordingSimpleProviderService service = new(Status("openai", ["openai", "custom"]), _ => throw new InvalidOperationException("broken"));
+        SimpleSwitcherController controller = await ReadyCustomController(service);
+
+        await controller.ExecuteAsync();
+
+        Assert.Equal(SimpleActivity.Failed, controller.Snapshot.Activity);
+        Assert.Equal("custom", controller.Snapshot.SelectedProviderId);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PropagatesServiceCancellationAndRestoresReadySnapshot()
+    {
+        RecordingSimpleProviderService service = new(Status("openai", ["openai", "custom"]), _ => Task.FromCanceled<SyncResult>(new CancellationToken(true)));
+        SimpleSwitcherController controller = await ReadyCustomController(service);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => controller.ExecuteAsync());
+
+        Assert.Equal(SimpleActivity.Ready, controller.Snapshot.Activity);
+        Assert.Equal("custom", controller.Snapshot.SelectedProviderId);
+        Assert.True(controller.Snapshot.CanExecute);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PropagatesApplicationCancellationAndRestoresReadySnapshot()
+    {
+        RecordingSimpleProviderService service = new(Status("openai", ["openai", "custom"]), _ => throw new SimpleApplicationException(ApplicationOperationLifecycle.Cancelled, []));
+        SimpleSwitcherController controller = await ReadyCustomController(service);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => controller.ExecuteAsync());
+
+        Assert.Equal(SimpleActivity.Ready, controller.Snapshot.Activity);
+        Assert.Equal("custom", controller.Snapshot.SelectedProviderId);
+        Assert.True(controller.Snapshot.CanExecute);
+    }
+
     private static RecordingSimpleProviderService ServiceWithReadyStatus(string current, string other) =>
         new(Status(current, [current, other]), intent => Task.FromResult(SuccessResult(intent is SyncIntent sync ? sync.ProviderId : ((SwitchIntent)intent).ProviderId)));
 
@@ -140,19 +283,33 @@ public sealed class SimpleSwitcherControllerExecutionTests
 
     private sealed class RecordingSimpleProviderService : ISimpleProviderService
     {
-        private readonly StatusSnapshot _status;
+        private readonly Func<CancellationToken, Task<StatusSnapshot>> _getStatus;
         private readonly Func<ApplicationWriteIntent, Task<SyncResult>> _execute;
 
         internal RecordingSimpleProviderService(StatusSnapshot status, Func<ApplicationWriteIntent, Task<SyncResult>> execute)
+            : this(_ => Task.FromResult(status), execute)
         {
-            _status = status;
+        }
+
+        internal RecordingSimpleProviderService(
+            Func<CancellationToken, Task<StatusSnapshot>> getStatus,
+            Func<ApplicationWriteIntent, Task<SyncResult>> execute)
+        {
+            _getStatus = getStatus;
             _execute = execute;
         }
 
         internal List<ApplicationWriteIntent> ExecutedIntents { get; } = [];
         internal TaskCompletionSource WriteStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource StatusStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal int StatusCalls { get; private set; }
 
-        public Task<StatusSnapshot> GetStatusAsync(string codexHome, CancellationToken cancellationToken = default) => Task.FromResult(_status);
+        public Task<StatusSnapshot> GetStatusAsync(string codexHome, CancellationToken cancellationToken = default)
+        {
+            StatusCalls++;
+            StatusStarted.TrySetResult();
+            return _getStatus(cancellationToken);
+        }
 
         public Task<SyncResult> ExecuteAsync(ApplicationWriteIntent intent, CancellationToken cancellationToken = default)
         {

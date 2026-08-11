@@ -41,7 +41,11 @@ internal sealed class SimpleSwitcherController
         string? preferredProvider = null,
         CancellationToken cancellationToken = default)
     {
-        BeginRefresh();
+        if (!TryBeginRefresh(out SimpleSwitcherSnapshot loading))
+        {
+            return;
+        }
+        NotifySnapshotChanged(loading);
 
         SimpleSwitcherSnapshot completed = Snapshot;
         try
@@ -89,7 +93,8 @@ internal sealed class SimpleSwitcherController
         SimpleSwitcherSnapshot published;
         lock (_snapshotLock)
         {
-            if (string.IsNullOrWhiteSpace(providerId)
+            if (_activeOperations != 0
+                || string.IsNullOrWhiteSpace(providerId)
                 || !_snapshot.Providers.Any(item => string.Equals(item.Id, providerId, StringComparison.Ordinal)))
             {
                 return false;
@@ -112,18 +117,21 @@ internal sealed class SimpleSwitcherController
             return;
         }
 
-        SimpleSwitcherSnapshot initial = Snapshot;
+        bool ownsExecution = false;
+        if (!TryBeginExecution(
+                out SimpleSwitcherSnapshot initial,
+                out string selectedProvider,
+                out SimpleSwitcherSnapshot executing))
+        {
+            Interlocked.Exchange(ref _executeInProgress, 0);
+            return;
+        }
+        ownsExecution = true;
+        NotifySnapshotChanged(executing);
+
         SimpleSwitcherSnapshot completed = initial;
         try
         {
-            if (initial.Activity != SimpleActivity.Ready
-                || string.IsNullOrWhiteSpace(initial.SelectedProviderId))
-            {
-                return;
-            }
-
-            BeginExecution();
-            string selectedProvider = initial.SelectedProviderId;
             IReadOnlyList<CodexProcessInfo> running = _processProbe.FindRunning();
             if (running.Count > 0)
             {
@@ -190,7 +198,7 @@ internal sealed class SimpleSwitcherController
             {
                 Activity = summary.SkippedRolloutFiles == 0 ? SimpleActivity.Success : SimpleActivity.Incomplete,
                 CurrentProviderId = result.TargetProvider,
-                Providers = providers,
+                Providers = RebuildProviders(providers, result.TargetProvider),
                 SelectedProviderId = selectedProvider,
                 Message = summary.SkippedRolloutFiles == 0
                     ? "同步完成，现在可以重新打开 Codex。"
@@ -202,6 +210,17 @@ internal sealed class SimpleSwitcherController
                 LastResult = summary,
                 CanExecute = false
             };
+        }
+        catch (OperationCanceledException)
+        {
+            completed = RestoreReadySnapshot(initial);
+            throw;
+        }
+        catch (SimpleApplicationException exception) when (
+            exception.Lifecycle == ApplicationOperationLifecycle.Cancelled)
+        {
+            completed = RestoreReadySnapshot(initial);
+            throw new OperationCanceledException("同步操作已取消。", exception);
         }
         catch (SimpleApplicationException exception) when (exception.RecoveryRequired)
         {
@@ -239,7 +258,7 @@ internal sealed class SimpleSwitcherController
         }
         finally
         {
-            if (Volatile.Read(ref _activeOperations) > 0)
+            if (ownsExecution)
             {
                 CompleteExecution(completed);
             }
@@ -249,6 +268,23 @@ internal sealed class SimpleSwitcherController
 
     private Task<StatusSnapshot> ReadStatusAsync(string selectedProvider, CancellationToken cancellationToken) =>
         _service.GetStatusAsync(_codexHome, cancellationToken);
+
+    private static SimpleSwitcherSnapshot RestoreReadySnapshot(SimpleSwitcherSnapshot snapshot) => snapshot with
+    {
+        Activity = SimpleActivity.Ready,
+        Message = "状态已就绪。",
+        Details = string.Empty,
+        LastResult = null
+    };
+
+    private static IReadOnlyList<SimpleProviderItem> RebuildProviders(
+        IReadOnlyList<SimpleProviderItem> providers,
+        string currentProvider) => providers
+            .Select(item => new SimpleProviderItem(
+                item.Id,
+                string.Equals(item.Id, currentProvider, StringComparison.Ordinal)))
+            .ToArray()
+            .AsReadOnly();
 
     private static string FormatApplicationErrors(IReadOnlyList<ApplicationError> errors) =>
         string.Join(Environment.NewLine, errors.Select(item =>
@@ -361,11 +397,15 @@ internal sealed class SimpleSwitcherController
         && string.IsNullOrEmpty(details)
         && Volatile.Read(ref _activeOperations) == 0;
 
-    private void BeginRefresh()
+    private bool TryBeginRefresh(out SimpleSwitcherSnapshot published)
     {
-        SimpleSwitcherSnapshot published;
         lock (_snapshotLock)
         {
+            if (_activeOperations != 0)
+            {
+                published = _snapshot;
+                return false;
+            }
             Interlocked.Increment(ref _activeOperations);
             published = _snapshot with
             {
@@ -377,7 +417,7 @@ internal sealed class SimpleSwitcherController
             };
             _snapshot = published;
         }
-        NotifySnapshotChanged(published);
+        return true;
     }
 
     private void CompleteRefresh(SimpleSwitcherSnapshot completed)
@@ -399,13 +439,24 @@ internal sealed class SimpleSwitcherController
         NotifySnapshotChanged(published);
     }
 
-    private void BeginExecution()
+    private bool TryBeginExecution(
+        out SimpleSwitcherSnapshot initial,
+        out string selectedProvider,
+        out SimpleSwitcherSnapshot published)
     {
-        SimpleSwitcherSnapshot published;
         lock (_snapshotLock)
         {
+            initial = _snapshot;
+            selectedProvider = initial.SelectedProviderId ?? string.Empty;
+            if (_activeOperations != 0
+                || initial.Activity != SimpleActivity.Ready
+                || string.IsNullOrWhiteSpace(selectedProvider))
+            {
+                published = initial;
+                return false;
+            }
             Interlocked.Increment(ref _activeOperations);
-            published = _snapshot with
+            published = initial with
             {
                 Activity = SimpleActivity.Executing,
                 Message = "正在同步...",
@@ -415,7 +466,7 @@ internal sealed class SimpleSwitcherController
             };
             _snapshot = published;
         }
-        NotifySnapshotChanged(published);
+        return true;
     }
 
     private void CompleteExecution(SimpleSwitcherSnapshot completed)
