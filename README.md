@@ -6,8 +6,9 @@ Windows 可视化工具，用于手动切换 Codex Provider，并同步历史会
 
 ## 功能范围
 
-- 显示当前 Provider 和配置中显式声明的 Provider。
-- 当前为隐式默认值时允许选择 `openai`。
+- 显示当前 Provider 和配置中显式声明的 Provider；当前 Provider 始终可选。
+- 启动时始终选择实时当前 Provider，不使用历史选择作为隐式切换目标。
+- 切换到不同 Provider 前显示 `当前 → 目标` 确认；同 Provider 同步不弹确认。
 - 目标 Provider 不同时，切换根级 `model_provider` 并同步会话。
 - 目标 Provider 相同时，保持 `config.toml` 字节不变，只同步会话。
 - 同步 rollout 与 SQLite 中的会话可见性元数据。
@@ -29,7 +30,7 @@ Windows 可视化工具，用于手动切换 Codex Provider，并同步历史会
 2. 运行 `CodexProviderSwitcher.exe`。
 3. 点击“刷新”，确认 SQLite 可用且没有 Codex 相关进程。
 4. 选择目标 Provider。
-5. 点击“切换并同步”。
+5. 点击“切换并同步”；如果目标不同，请在确认框再次核对 `当前 → 目标`。
 6. 操作成功后重新打开 Codex。
 
 如果窗口检测到 Codex 正在运行，它只会阻止写入并提示手动关闭，不会结束进程。
