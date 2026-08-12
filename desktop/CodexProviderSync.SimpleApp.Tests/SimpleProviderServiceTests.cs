@@ -118,6 +118,84 @@ public sealed class SimpleProviderServiceTests
         Assert.Contains(error.Errors, item => item.EvidencePath!.EndsWith("bound"));
     }
 
+    [Fact]
+    public async Task ExecuteAsync_PreservesRecoveryEvidenceFromTheRealApplicationService()
+    {
+        const string backupDirectory = @"C:\fixture\.codex\backups_state\provider-sync\recovery";
+        ApplicationService application = new(
+            new UnusedStatusPort(),
+            new RecoveryWritePort(backupDirectory),
+            new InMemoryApplicationPlanLedger());
+        SimpleProviderService service = new(application);
+
+        SimpleApplicationException error = await Assert.ThrowsAsync<SimpleApplicationException>(
+            () => service.ExecuteAsync(
+                new SyncIntent(@"C:\fixture\.codex", null, "openai"),
+                CancellationToken.None));
+
+        Assert.Equal(ApplicationOperationLifecycle.RecoveryRequired, error.Lifecycle);
+        Assert.True(error.RecoveryRequired);
+        ApplicationError applicationError = Assert.Single(error.Errors);
+        Assert.True(applicationError.RecoveryRequired);
+        Assert.Equal(backupDirectory, applicationError.EvidencePath);
+    }
+
+    private sealed class UnusedStatusPort : IApplicationStatusPort
+    {
+        public Task<StatusSnapshot> GetStatusAsync(
+            ApplicationStatusRequest request,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class RecoveryWritePort(string backupDirectory) : IApplicationWritePort
+    {
+        public Task<ApplicationPlanPreview> CreatePlanAsync(
+            ApplicationWriteIntent intent,
+            string operationId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ApplicationPlanPreview(
+                intent,
+                "state-fingerprint",
+                "execution-token",
+                []));
+
+        public Task<SyncResult> ExecuteSyncAsync(
+            SyncIntent intent,
+            ApplicationOperationPlan plan,
+            string operationId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromException<SyncResult>(new SyncTransactionException(
+                new InvalidOperationException("sync failed"),
+                ["rollback could not restore SQLite"],
+                backupDirectory,
+                [@"C:\fixture\.codex\sessions\rollout.jsonl"],
+                [@"C:\fixture\.codex\sqlite\state_5.sqlite"],
+                rollbackStatus: "incomplete",
+                recoveryRequired: true));
+
+        public Task<SyncResult> ExecuteSwitchAsync(
+            SwitchIntent intent,
+            ApplicationOperationPlan plan,
+            string operationId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RestoreResult> ExecuteRestoreAsync(
+            RestoreIntent intent,
+            ApplicationOperationPlan plan,
+            string operationId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<BackupPruneResult> ExecutePruneAsync(
+            PruneIntent intent,
+            ApplicationOperationPlan plan,
+            string operationId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
     private sealed class FakeApplicationService : IApplicationService
     {
         private readonly Queue<ApplicationOutcome<ApplicationOperationPlan>> _plans = new();

@@ -487,7 +487,11 @@ public sealed class ApplicationService : IApplicationService
                 ApplicationOperationLifecycle.Cancelled,
                 null,
                 [],
-                [new ApplicationError("cancelled", error.Message, RollbackStatus: error.RollbackStatus)]);
+                [new ApplicationError(
+                    "cancelled",
+                    error.Message,
+                    RollbackStatus: error.RollbackStatus,
+                    EvidencePath: error.BackupDirectory)]);
         }
         catch (OperationCanceledException error)
         {
@@ -515,8 +519,9 @@ public sealed class ApplicationService : IApplicationService
                 [new ApplicationError(
                     error.Code.ToLowerInvariant(),
                     error.Message,
-                    error.RecoveryRequired,
-                    error.RollbackStatus)]);
+                    RecoveryRequired: error.RecoveryRequired,
+                    RollbackStatus: error.RollbackStatus,
+                    EvidencePath: error.BackupDirectory)]);
         }
         catch (RecoveryRequiredException error)
         {

@@ -292,24 +292,31 @@ public sealed class ApplicationServiceTests
                 new ApplicationApplyAuthorization(true, cancelPlan, cancelPlan.Digest)));
 
         TestRig recoveryRig = new();
+        const string backupDirectory = "/fixture/backups/recovery";
         ApplicationOperationPlan recoveryPlan = (await recoveryRig.Service.SyncAsync(
             new SyncApplicationRequest(intent))).Data!.Plan;
-        recoveryRig.Write.SyncHandler = (_, _, _, _) => throw new ApplicationPortException(
-            "recovery_required",
-            "rollback could not restore SQLite",
-            recoveryRequired: true,
-            rollbackStatus: "incomplete");
+        recoveryRig.Write.SyncHandler = (_, _, _, _) => throw new SyncTransactionException(
+            new InvalidOperationException("sync failed"),
+            ["rollback could not restore SQLite"],
+            backupDirectory,
+            ["/fixture/rollout.jsonl"],
+            ["/fixture/state_5.sqlite"],
+            rollbackStatus: "incomplete",
+            recoveryRequired: true);
         ApplicationOutcome<ApplicationWriteResult<SyncResult>> recovery = await recoveryRig.Service.SyncAsync(
             new SyncApplicationRequest(
                 intent,
                 new ApplicationApplyAuthorization(true, recoveryPlan, recoveryPlan.Digest)));
 
         Assert.Equal(ApplicationOperationLifecycle.Cancelled, cancelled.Lifecycle);
-        Assert.Equal("complete", Assert.Single(cancelled.Errors).RollbackStatus);
+        ApplicationError cancelledError = Assert.Single(cancelled.Errors);
+        Assert.Equal("complete", cancelledError.RollbackStatus);
+        Assert.Equal("/fixture/backups/cancel", cancelledError.EvidencePath);
         Assert.Equal(ApplicationOperationLifecycle.RecoveryRequired, recovery.Lifecycle);
         ApplicationError recoveryError = Assert.Single(recovery.Errors);
         Assert.True(recoveryError.RecoveryRequired);
         Assert.Equal("incomplete", recoveryError.RollbackStatus);
+        Assert.Equal(backupDirectory, recoveryError.EvidencePath);
     }
 
     [Fact]
