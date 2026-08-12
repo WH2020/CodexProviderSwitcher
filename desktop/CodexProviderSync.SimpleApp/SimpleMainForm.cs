@@ -197,7 +197,7 @@ internal sealed class SimpleMainForm : Form
             return;
         }
         RestoreWindowBounds(settings.WindowBounds);
-        await RefreshSafelyAsync(settings.LastProvider);
+        await RefreshSafelyAsync(null);
     }
 
     private void RestoreWindowBounds(WindowBoundsState? saved)

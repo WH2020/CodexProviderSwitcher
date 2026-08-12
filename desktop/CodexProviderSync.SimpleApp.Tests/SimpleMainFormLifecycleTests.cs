@@ -69,6 +69,23 @@ public sealed class SimpleMainFormLifecycleTests
     }
 
     [Fact]
+    public void Shown_SelectsTheLiveCurrentProviderInsteadOfRememberedSwitchTarget()
+    {
+        SimpleSwitcherController controller = Controller(new FakeSimpleProviderService(Status(
+            current: "openai",
+            configured: ["openai", "custom"])));
+        using SimpleMainForm form = Form(
+            controller,
+            settingsLoader: _ => Task.FromResult(new SimpleUserSettings("custom", null)));
+
+        form.Show();
+        System.Windows.Forms.Application.DoEvents();
+
+        Assert.Equal("openai", controller.Snapshot.SelectedProviderId);
+        Assert.Equal("openai", Field<ComboBox>(form, "_providerCombo").SelectedItem);
+    }
+
+    [Fact]
     public void Shown_RefreshFailureDoesNotEscapeAsyncVoidAndRendersFailedSnapshot()
     {
         SimpleSwitcherController controller = Controller(new ThrowingStatusProviderService());
