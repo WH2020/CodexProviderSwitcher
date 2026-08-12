@@ -36,6 +36,22 @@ function Assert-NoReparsePoints([string]$Path) {
     }
 }
 
+function Assert-OwnedOutputHasNoReparsePoints([string]$Path) {
+    $pending = New-Object System.Collections.Generic.Stack[string]
+    $pending.Push($Path)
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        foreach ($item in Get-ChildItem -LiteralPath $current -Force) {
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Refusing to clean owned publish output containing a reparse point: $($item.FullName)"
+            }
+            if ($item.PSIsContainer) {
+                $pending.Push($item.FullName)
+            }
+        }
+    }
+}
+
 $artifactsRoot = [System.IO.Path]::GetFullPath($artifactsRoot)
 $artifactsPrefix = $artifactsRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
 if ((Test-SamePath $outputDir $repoRoot) -or (Test-SamePath $outputDir $artifactsRoot) -or
@@ -64,8 +80,9 @@ $children = Get-ChildItem -LiteralPath $outputDir -Force
 if ($children.Count -gt 0) {
     if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf) -or
         (Get-Content -LiteralPath $sentinel -Raw) -cne $sentinelContent) {
-        throw "Refusing to clean non-empty output without the expected ownership sentinel: $outputDir"
+        throw "Refusing to clean non-empty output without the expected ownership sentinel: $outputDir. Manually move or delete the old output contents, or choose a new -Output leaf."
     }
+    Assert-OwnedOutputHasNoReparsePoints $outputDir
     Write-Host "Cleaning owned publish output contents: $outputDir"
     foreach ($child in $children) {
         if ($child.Name -ne $sentinelName) {

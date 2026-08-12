@@ -33,6 +33,7 @@ test("simple GUI publishes the dedicated self-contained executable", async () =>
 
 test("simple GUI publish cleanup is confined to owned artifacts leaves", (t) => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "simple-gui-publish-"));
+  let outside;
   const scriptPath = path.join(fixture, "scripts", "publish-simple-gui.ps1");
   const project = path.join(fixture, "desktop", "CodexProviderSync.SimpleApp", "CodexProviderSync.SimpleApp.csproj");
   const fakeDotnet = path.join(fixture, "fake-dotnet.cmd");
@@ -100,12 +101,12 @@ test("simple GUI publish cleanup is confined to owned artifacts leaves", (t) => 
     assert.notEqual(invoke("artifacts\\no-exe", { exe: false }).status, 0, "must reject a publish with no executable");
 
     const junction = path.join(fixture, "artifacts", "junction");
-    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "simple-gui-junction-"));
+    outside = fs.mkdtempSync(path.join(os.tmpdir(), "simple-gui-junction-"));
     const junctionResult = spawnSync("cmd.exe", ["/c", "mklink", "/J", junction, outside], { encoding: "utf8" });
     if (junctionResult.status === 0) {
       assert.notEqual(invoke("artifacts\\junction\\leaf").status, 0, "must reject a reparse-point output path");
     } else {
-      t.diagnostic(`junction test skipped: ${junctionResult.stderr || junctionResult.stdout}`);
+      assert.fail(`junction creation must be available: ${junctionResult.stderr || junctionResult.stdout}`);
     }
 
     for (const unsafe of [".", "artifacts", "desktop", ".git", path.join(os.tmpdir(), "outside-simple-gui-publish")]) {
@@ -114,5 +115,52 @@ test("simple GUI publish cleanup is confined to owned artifacts leaves", (t) => 
     }
   } finally {
     fs.rmSync(fixture, { recursive: true, force: true });
+    if (outside) fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("simple GUI refuses owned publish trees containing direct or nested junctions before cleanup", () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "simple-gui-links-"));
+  const outsideRoots = [];
+  const sentinel = ".codex-provider-switcher-publish-root";
+  const sentinelContent = "codex-provider-switcher-simple-publish-root-v1\n";
+  const scriptPath = path.join(fixture, "scripts", "publish-simple-gui.ps1");
+  const fakeDotnet = path.join(fixture, "fake-dotnet.cmd");
+
+  fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+  fs.mkdirSync(path.join(fixture, "desktop", "CodexProviderSync.SimpleApp"), { recursive: true });
+  fs.mkdirSync(path.join(fixture, "artifacts"));
+  fs.writeFileSync(scriptPath, fs.readFileSync(path.join(repoRoot, "scripts", "publish-simple-gui.ps1")));
+  fs.writeFileSync(path.join(fixture, "desktop", "CodexProviderSync.SimpleApp", "CodexProviderSync.SimpleApp.csproj"), "<Project />\n");
+  fs.writeFileSync(fakeDotnet, "@echo off\r\nexit /b 0\r\n");
+
+  const invoke = (output) => spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, "-DotnetPath", fakeDotnet, "-Output", output], { cwd: fixture, encoding: "utf8" });
+  const addJunction = (link, target) => {
+    const result = spawnSync("cmd.exe", ["/c", "mklink", "/J", link, target], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  };
+
+  try {
+    for (const [name, linkPath] of [["direct", "link"], ["nested", path.join("nested", "link")]]) {
+      const output = path.join(fixture, "artifacts", name);
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), "simple-gui-owned-link-"));
+      outsideRoots.push(outside);
+      fs.mkdirSync(output, { recursive: true });
+      fs.writeFileSync(path.join(output, sentinel), sentinelContent);
+      fs.writeFileSync(path.join(output, "owned.txt"), "preserve");
+      fs.writeFileSync(path.join(outside, "marker.txt"), "outside-preserve");
+      const link = path.join(output, linkPath);
+      fs.mkdirSync(path.dirname(link), { recursive: true });
+      addJunction(link, outside);
+
+      const result = invoke(`artifacts\\${name}`);
+      assert.notEqual(result.status, 0, `${name} junction must be rejected`);
+      assert.equal(fs.readFileSync(path.join(outside, "marker.txt"), "utf8"), "outside-preserve");
+      assert.equal(fs.readFileSync(path.join(output, "owned.txt"), "utf8"), "preserve");
+      assert.equal(fs.existsSync(link), true);
+    }
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+    for (const outside of outsideRoots) fs.rmSync(outside, { recursive: true, force: true });
   }
 });
