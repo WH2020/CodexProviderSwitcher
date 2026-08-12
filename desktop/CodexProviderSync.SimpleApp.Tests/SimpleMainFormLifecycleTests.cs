@@ -117,7 +117,7 @@ public sealed class SimpleMainFormLifecycleTests
     }
 
     [Fact]
-    public void DifferentProviderExecution_CancelledConfirmationDoesNotReadStatusOrWrite()
+    public void DifferentProviderExecution_CancelledConfirmationDoesNotWrite()
     {
         RecordingFormProviderService service = new();
         SimpleSwitcherController controller = Controller(service);

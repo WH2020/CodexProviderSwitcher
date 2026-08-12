@@ -200,7 +200,7 @@ public sealed class SimpleSwitcherControllerRefreshTests
     }
 
     [Fact]
-    public async Task RefreshAsync_FallsBackToFirstConfiguredProviderWhenCurrentIsAbsent()
+    public async Task RefreshAsync_KeepsCurrentProviderWhenItIsNotDeclared()
     {
         SimpleSwitcherController controller = Controller(Status(
             current: "historical",
@@ -208,7 +208,7 @@ public sealed class SimpleSwitcherControllerRefreshTests
 
         await controller.RefreshAsync();
 
-        Assert.Equal("azure", controller.Snapshot.SelectedProviderId);
+        Assert.Equal("historical", controller.Snapshot.SelectedProviderId);
     }
 
     [Fact]
