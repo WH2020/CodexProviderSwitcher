@@ -117,6 +117,107 @@ public sealed class SimpleMainFormLifecycleTests
     }
 
     [Fact]
+    public void DifferentProviderExecution_CancelledConfirmationDoesNotReadStatusOrWrite()
+    {
+        RecordingFormProviderService service = new();
+        SimpleSwitcherController controller = Controller(service);
+        string? current = null;
+        string? target = null;
+        using SimpleMainForm form = Form(
+            controller,
+            switchConfirmation: (observedCurrent, observedTarget) =>
+            {
+                current = observedCurrent;
+                target = observedTarget;
+                return false;
+            });
+        form.Show();
+        System.Windows.Forms.Application.DoEvents();
+        Field<ComboBox>(form, "_providerCombo").SelectedItem = "custom";
+
+        Field<Button>(form, "_executeButton").PerformClick();
+
+        Assert.Equal("openai", current);
+        Assert.Equal("custom", target);
+        Assert.Equal(2, service.StatusCalls);
+        Assert.Empty(service.ExecutedIntents);
+    }
+
+    [Fact]
+    public void DifferentProviderExecution_ApprovedConfirmationUsesSelectedTarget()
+    {
+        RecordingFormProviderService service = new();
+        SimpleSwitcherController controller = Controller(service);
+        string? transition = null;
+        using SimpleMainForm form = Form(
+            controller,
+            switchConfirmation: (current, target) =>
+            {
+                transition = current + " → " + target;
+                return true;
+            });
+        form.Show();
+        System.Windows.Forms.Application.DoEvents();
+        Field<ComboBox>(form, "_providerCombo").SelectedItem = "custom";
+
+        Field<Button>(form, "_executeButton").PerformClick();
+        PumpUntil(() => service.ExecutedIntents.Count == 1);
+
+        Assert.Equal("openai → custom", transition);
+        SwitchIntent intent = Assert.IsType<SwitchIntent>(Assert.Single(service.ExecutedIntents));
+        Assert.Equal("custom", intent.ProviderId);
+    }
+
+    [Fact]
+    public void CurrentProviderSynchronization_DoesNotRequestSwitchConfirmation()
+    {
+        RecordingFormProviderService service = new();
+        SimpleSwitcherController controller = Controller(service);
+        int confirmations = 0;
+        using SimpleMainForm form = Form(
+            controller,
+            switchConfirmation: (_, _) =>
+            {
+                confirmations++;
+                return false;
+            });
+        form.Show();
+        System.Windows.Forms.Application.DoEvents();
+
+        Field<Button>(form, "_executeButton").PerformClick();
+        PumpUntil(() => service.ExecutedIntents.Count == 1);
+
+        Assert.Equal(0, confirmations);
+        SyncIntent intent = Assert.IsType<SyncIntent>(Assert.Single(service.ExecutedIntents));
+        Assert.Equal("openai", intent.ProviderId);
+    }
+
+    [Fact]
+    public void DifferentProviderExecution_ConfirmationUsesFreshCurrentProvider()
+    {
+        ChangingCurrentProviderService service = new();
+        SimpleSwitcherController controller = Controller(service);
+        string? confirmedCurrent = null;
+        using SimpleMainForm form = Form(
+            controller,
+            switchConfirmation: (current, _) =>
+            {
+                confirmedCurrent = current;
+                return false;
+            });
+        form.Show();
+        System.Windows.Forms.Application.DoEvents();
+        Field<ComboBox>(form, "_providerCombo").SelectedItem = "custom";
+
+        Field<Button>(form, "_executeButton").PerformClick();
+
+        Assert.Equal("managed-current", confirmedCurrent);
+        Assert.Equal(2, service.StatusCalls);
+        Assert.Equal(SimpleActivity.Ready, controller.Snapshot.Activity);
+        Assert.Empty(service.ExecutedIntents);
+    }
+
+    [Fact]
     public void SaveFailureDoesNotPreventWindowClosing()
     {
         SimpleSwitcherController controller = Controller(new FakeSimpleProviderService(Status(
@@ -233,7 +334,8 @@ public sealed class SimpleMainFormLifecycleTests
         SimpleSwitcherController controller,
         Func<CancellationToken, Task<SimpleUserSettings>>? settingsLoader = null,
         Func<SimpleUserSettings, CancellationToken, Task>? settingsSaver = null,
-        Action<string>? clipboardWriter = null)
+        Action<string>? clipboardWriter = null,
+        Func<string, string, bool>? switchConfirmation = null)
     {
         string path = Path.Combine(
             Path.GetTempPath(),
@@ -244,7 +346,8 @@ public sealed class SimpleMainFormLifecycleTests
             new SimpleSettingsStore(path),
             settingsLoader,
             settingsSaver,
-            clipboardWriter);
+            clipboardWriter,
+            switchConfirmation);
     }
 
     private static Label StateLabel(SimpleMainForm form) => Field<Label>(form, "_stateLabel");
@@ -365,4 +468,65 @@ public sealed class SimpleMainFormLifecycleTests
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }
+
+    private sealed class RecordingFormProviderService : ISimpleProviderService
+    {
+        internal int StatusCalls { get; private set; }
+        internal List<ApplicationWriteIntent> ExecutedIntents { get; } = [];
+
+        public Task<StatusSnapshot> GetStatusAsync(
+            string codexHome,
+            CancellationToken cancellationToken = default)
+        {
+            StatusCalls++;
+            return Task.FromResult(Status(current: "openai", configured: ["openai", "custom"]));
+        }
+
+        public Task<SyncResult> ExecuteAsync(
+            ApplicationWriteIntent intent,
+            CancellationToken cancellationToken = default)
+        {
+            ExecutedIntents.Add(intent);
+            string target = intent is SyncIntent sync ? sync.ProviderId : ((SwitchIntent)intent).ProviderId;
+            return Task.FromResult(new SyncResult
+            {
+                CodexHome = @"C:\fixture\.codex",
+                TargetProvider = target,
+                PreviousProvider = "openai",
+                BackupDir = @"C:\fixture\backup",
+                ChangedSessionFiles = 1,
+                SqliteRowsUpdated = 1,
+                SqlitePresent = true,
+                SkippedLockedRolloutFiles = [],
+                SkippedUnreadableRolloutFiles = [],
+                RolloutCountsBefore = new ProviderCounts(),
+                EncryptedContentCounts = new ProviderCounts()
+            });
+        }
+    }
+
+    private sealed class ChangingCurrentProviderService : ISimpleProviderService
+    {
+        internal int StatusCalls { get; private set; }
+        internal List<ApplicationWriteIntent> ExecutedIntents { get; } = [];
+
+        public Task<StatusSnapshot> GetStatusAsync(
+            string codexHome,
+            CancellationToken cancellationToken = default)
+        {
+            StatusCalls++;
+            return Task.FromResult(StatusCalls == 1
+                ? Status(current: "openai", configured: ["openai", "custom"])
+                : Status(current: "managed-current", configured: ["custom"]));
+        }
+
+        public Task<SyncResult> ExecuteAsync(
+            ApplicationWriteIntent intent,
+            CancellationToken cancellationToken = default)
+        {
+            ExecutedIntents.Add(intent);
+            throw new InvalidOperationException("A cancelled confirmation must not write.");
+        }
+    }
+
 }

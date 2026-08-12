@@ -26,7 +26,8 @@ configuration, CCSwitch data, watcher behavior, or Codex process handling.
 4. Synchronizing the current provider proceeds without an extra switch
    confirmation.
 5. Switching to a different provider requires a confirmation that names both
-   ends as `current -> target`. Cancelling performs no status refresh, plan, or
+   ends as `current -> target`. The current end comes from the execution-time
+   status reread, not a stale window snapshot. Cancelling performs no plan or
    write.
 6. If the current provider is not declared, the GUI includes it instead of
    silently falling back to the first declared provider.

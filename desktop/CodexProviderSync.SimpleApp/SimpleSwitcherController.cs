@@ -114,7 +114,9 @@ internal sealed class SimpleSwitcherController
         return true;
     }
 
-    internal async Task ExecuteAsync(CancellationToken cancellationToken = default)
+    internal async Task ExecuteAsync(
+        CancellationToken cancellationToken = default,
+        Func<string, string, bool>? confirmSwitch = null)
     {
         if (Interlocked.CompareExchange(ref _executeInProgress, 1, 0) != 0)
         {
@@ -177,6 +179,20 @@ internal sealed class SimpleSwitcherController
                     CanExecute = false,
                     LastResult = null
                 };
+                return;
+            }
+            if (!string.Equals(
+                    selectedProvider,
+                    refreshed.CurrentProvider.Provider,
+                    StringComparison.Ordinal)
+                && confirmSwitch is not null
+                && !confirmSwitch(refreshed.CurrentProvider.Provider, selectedProvider))
+            {
+                completed = BuildReadySnapshot(
+                    refreshed,
+                    providers,
+                    selectedProvider,
+                    []);
                 return;
             }
 

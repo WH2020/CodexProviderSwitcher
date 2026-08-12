@@ -8,6 +8,7 @@ internal sealed class SimpleMainForm : Form
     private readonly Func<CancellationToken, Task<SimpleUserSettings>> _loadSettings;
     private readonly Func<SimpleUserSettings, CancellationToken, Task> _saveSettings;
     private readonly Action<string> _clipboardWriter;
+    private readonly Func<string, string, bool> _confirmSwitch;
     private bool _rendering;
     private bool _settingsLoadCompleted;
     private string? _loadedLastProvider;
@@ -47,12 +48,14 @@ internal sealed class SimpleMainForm : Form
         SimpleSettingsStore settings,
         Func<CancellationToken, Task<SimpleUserSettings>>? settingsLoader = null,
         Func<SimpleUserSettings, CancellationToken, Task>? settingsSaver = null,
-        Action<string>? clipboardWriter = null)
+        Action<string>? clipboardWriter = null,
+        Func<string, string, bool>? switchConfirmation = null)
     {
         _controller = controller;
         _loadSettings = settingsLoader ?? settings.LoadAsync;
         _saveSettings = settingsSaver ?? settings.SaveAsync;
         _clipboardWriter = clipboardWriter ?? Clipboard.SetText;
+        _confirmSwitch = switchConfirmation ?? ConfirmSwitch;
 
         Text = "Codex Provider Switcher";
         Size = new Size(560, 420);
@@ -254,7 +257,7 @@ internal sealed class SimpleMainForm : Form
     {
         try
         {
-            await _controller.ExecuteAsync();
+            await _controller.ExecuteAsync(confirmSwitch: _confirmSwitch);
         }
         catch (OperationCanceledException)
         {
@@ -274,6 +277,17 @@ internal sealed class SimpleMainForm : Form
                 MessageBoxIcon.Warning);
         }
     }
+
+    private bool ConfirmSwitch(string currentProvider, string targetProvider) =>
+        MessageBox.Show(
+            this,
+            $"即将切换 Provider：{Environment.NewLine}{Environment.NewLine}"
+                + $"{currentProvider} → {targetProvider}{Environment.NewLine}{Environment.NewLine}"
+                + "此操作将修改 Provider 配置和会话元数据。是否继续？",
+            "确认切换 Provider",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2) == DialogResult.Yes;
 
     private void CopyButtonOnClick(object? sender, EventArgs eventArgs)
     {

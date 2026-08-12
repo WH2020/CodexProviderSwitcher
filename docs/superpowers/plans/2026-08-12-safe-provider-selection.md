@@ -57,12 +57,12 @@
 
 **Interfaces:**
 - Consumes: `CurrentProviderId`, `SelectedProviderId`, and an injectable `Func<string, string, bool>` confirmation callback
-- Produces: no controller execution on cancellation; normal execution after approval; no prompt for same-provider synchronization
+- Produces: execution-time confirmation after the controller status reread; no plan/write on cancellation; normal execution after approval; no prompt for same-provider synchronization
 
 - [ ] Write failing tests for cancellation, approval, and same-provider synchronization.
 - [ ] Run those tests and confirm the missing confirmation behavior.
 - [ ] Add the confirmation callback with a default warning `MessageBox` showing `current -> target`.
-- [ ] Gate `ExecuteAsync` only when current and target differ.
+- [ ] Pass the confirmation callback into `ExecuteAsync` and gate after its fresh status read, only when current and target differ.
 - [ ] Run the focused lifecycle and execution tests and confirm they pass.
 
 ### Task 4: Verify, publish, and deliver
