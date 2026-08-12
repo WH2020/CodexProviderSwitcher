@@ -23,6 +23,21 @@ public sealed class CoreApplicationWritePortTests
     }
 
     [Fact]
+    public async Task PreservesCoreSqliteBusyWhenExecutionMayHaveAlreadyMutatedState()
+    {
+        SqliteException original = new("native SQLite busy", 5, 5);
+        SqliteBusyException busy = Assert.IsType<SqliteBusyException>(
+            SqliteStateService.WrapSqliteBusyError(original, "restore SQLite backup"));
+
+        SqliteBusyException error = await Assert.ThrowsAsync<SqliteBusyException>(
+            () => CoreApplicationWritePort.MapCoreFailuresAsync<int>(
+                () => Task.FromException<int>(busy),
+                mapSqliteBusy: false));
+
+        Assert.Same(busy, error);
+    }
+
+    [Fact]
     public async Task ProductionSync_DefaultsToDryRunThenAppliesTheExactCorePlan()
     {
         using Fixture fixture = await Fixture.CreateAsync("relay");

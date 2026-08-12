@@ -91,14 +91,16 @@ public sealed class CoreApplicationWritePort : IApplicationWritePort
     {
         RestoreIntent normalized = (RestoreIntent)NormalizeIntent(intent);
         CoreWritePlanSnapshot expected = MapExpectedSnapshot("restore", plan);
-        return MapCoreFailuresAsync(() => _syncService.RunRestoreCheckedAsync(
-            expected,
-            explicitCodexHome: normalized.CodexHome,
-            backupDir: normalized.BackupDirectory,
-            options: MapRestoreOptions(normalized),
-            explicitSqliteHome: normalized.SqliteHomeOverride,
-            snapshotExpiresAtUtc: plan.ExpiresAtUtc,
-            cancellationToken));
+        return MapCoreFailuresAsync(
+            () => _syncService.RunRestoreCheckedAsync(
+                expected,
+                explicitCodexHome: normalized.CodexHome,
+                backupDir: normalized.BackupDirectory,
+                options: MapRestoreOptions(normalized),
+                explicitSqliteHome: normalized.SqliteHomeOverride,
+                snapshotExpiresAtUtc: plan.ExpiresAtUtc,
+                cancellationToken),
+            mapSqliteBusy: false);
     }
 
     public Task<BackupPruneResult> ExecutePruneAsync(
@@ -109,12 +111,14 @@ public sealed class CoreApplicationWritePort : IApplicationWritePort
     {
         PruneIntent normalized = (PruneIntent)NormalizeIntent(intent);
         CoreWritePlanSnapshot expected = MapExpectedSnapshot("prune", plan);
-        return MapCoreFailuresAsync(() => _syncService.RunPruneBackupsCheckedAsync(
-            expected,
-            explicitCodexHome: normalized.CodexHome,
-            keepCount: normalized.BackupRetentionCount,
-            snapshotExpiresAtUtc: plan.ExpiresAtUtc,
-            cancellationToken));
+        return MapCoreFailuresAsync(
+            () => _syncService.RunPruneBackupsCheckedAsync(
+                expected,
+                explicitCodexHome: normalized.CodexHome,
+                keepCount: normalized.BackupRetentionCount,
+                snapshotExpiresAtUtc: plan.ExpiresAtUtc,
+                cancellationToken),
+            mapSqliteBusy: false);
     }
 
     private Task<CoreWritePlanSnapshot> CreateCoreSnapshotAsync(
@@ -267,7 +271,9 @@ public sealed class CoreApplicationWritePort : IApplicationWritePort
             : Path.GetFullPath(value.Trim());
     }
 
-    internal static async Task<T> MapCoreFailuresAsync<T>(Func<Task<T>> operation)
+    internal static async Task<T> MapCoreFailuresAsync<T>(
+        Func<Task<T>> operation,
+        bool mapSqliteBusy = true)
     {
         try
         {
@@ -287,7 +293,7 @@ public sealed class CoreApplicationWritePort : IApplicationWritePort
                 error.Message,
                 innerException: error);
         }
-        catch (SqliteBusyException error)
+        catch (SqliteBusyException error) when (mapSqliteBusy)
         {
             throw new ApplicationPortException(
                 "target_busy",
