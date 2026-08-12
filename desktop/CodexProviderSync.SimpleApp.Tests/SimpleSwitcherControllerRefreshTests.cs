@@ -212,7 +212,7 @@ public sealed class SimpleSwitcherControllerRefreshTests
     }
 
     [Fact]
-    public async Task RefreshAsync_DoesNotInjectExplicitUnconfiguredOpenAi()
+    public async Task RefreshAsync_IncludesExplicitCurrentOpenAiWithoutADeclaredTable()
     {
         SimpleSwitcherController controller = Controller(Status(
             current: "openai",
@@ -221,7 +221,22 @@ public sealed class SimpleSwitcherControllerRefreshTests
 
         await controller.RefreshAsync();
 
-        Assert.Equal(["custom"], controller.Snapshot.Providers.Select(item => item.Id));
+        Assert.Equal(["openai", "custom"], controller.Snapshot.Providers.Select(item => item.Id));
+        Assert.Equal("openai", controller.Snapshot.SelectedProviderId);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_IncludesAnUndeclaredCurrentProviderInsteadOfFallingBack()
+    {
+        SimpleSwitcherController controller = Controller(Status(
+            current: "managed-current",
+            configured: ["custom"],
+            currentImplicit: false));
+
+        await controller.RefreshAsync();
+
+        Assert.Equal(["managed-current", "custom"], controller.Snapshot.Providers.Select(item => item.Id));
+        Assert.Equal("managed-current", controller.Snapshot.SelectedProviderId);
     }
 
     [Fact]

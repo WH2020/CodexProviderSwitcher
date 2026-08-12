@@ -385,13 +385,9 @@ internal sealed class SimpleSwitcherController
         HashSet<string> configured = new(
             status.DeclaredProviders.Where(item => !string.IsNullOrWhiteSpace(item)),
             StringComparer.Ordinal);
-        if (status.CurrentProvider.Implicit
-            && string.Equals(
-                status.CurrentProvider.Provider,
-                AppConstants.DefaultProvider,
-                StringComparison.Ordinal))
+        if (!string.IsNullOrWhiteSpace(status.CurrentProvider.Provider))
         {
-            configured.Add(AppConstants.DefaultProvider);
+            configured.Add(status.CurrentProvider.Provider);
         }
         return configured
             .OrderByDescending(item =>

@@ -59,6 +59,30 @@ public sealed class SimpleSwitcherIntegrationTests
     }
 
     [Fact]
+    public async Task Controller_Refresh_KeepsExplicitOpenAiCurrentWhenOnlyCustomIsDeclared()
+    {
+        TestCodexHomeFixture fixture = await TestCodexHomeFixture.CreateAsync();
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(fixture.CodexHome, "config.toml"),
+                "model_provider = \"openai\"\n\n[model_providers.custom]\nbase_url = \"https://example.com\"\n");
+            SimpleSwitcherController controller = SimpleAppComposition.CreateController(
+                fixture.CodexHome,
+                new FakeProcessProbe());
+
+            await controller.RefreshAsync();
+
+            Assert.Equal(["openai", "custom"], controller.Snapshot.Providers.Select(item => item.Id));
+            Assert.Equal("openai", controller.Snapshot.SelectedProviderId);
+        }
+        finally
+        {
+            Directory.Delete(fixture.Root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Controller_Execute_MapsCoreSqliteBusyThroughApplicationToManualCloseBlock()
     {
         BusyPlanningWritePort writePort = new();
