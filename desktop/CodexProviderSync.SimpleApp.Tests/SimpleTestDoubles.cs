@@ -12,11 +12,13 @@ internal static class SimpleSwitcherTestData
         IReadOnlyList<string>? rolloutProviders = null,
         bool sqliteSupported = true,
         bool currentImplicit = false,
-        IReadOnlyList<TransactionRecoveryInfo>? pendingTransactions = null) => new()
+        IReadOnlyList<TransactionRecoveryInfo>? pendingTransactions = null,
+        ProviderCounts? sqliteCounts = null) => new()
         {
             CodexHome = @"C:\fixture\.codex",
             CurrentProvider = new CurrentProviderInfo(current, currentImplicit),
             ConfiguredProviders = configured,
+            DeclaredProviders = configured,
             RolloutCounts = new ProviderCounts
             {
                 Sessions = (rolloutProviders ?? [])
@@ -25,7 +27,7 @@ internal static class SimpleSwitcherTestData
             LockedRolloutFiles = [],
             UnreadableRolloutFiles = [],
             EncryptedContentCounts = new ProviderCounts(),
-            SqliteCounts = new ProviderCounts(),
+            SqliteCounts = sqliteCounts ?? new ProviderCounts(),
             SqliteAccess = sqliteSupported
                 ? SqliteAccessInfo.Direct
                 : new SqliteAccessInfo(false, "unsupported", "SQLite 不支持"),

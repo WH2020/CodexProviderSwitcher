@@ -1,12 +1,87 @@
 using System.Text;
 using System.Text.Json;
+using CodexProviderSync.Application;
+using CodexProviderSync.Core;
 using CodexProviderSync.Core.Tests;
 using CodexProviderSync.SimpleApp;
+using Microsoft.Data.Sqlite;
 
 namespace CodexProviderSync.SimpleApp.Tests;
 
 public sealed class SimpleSwitcherIntegrationTests
 {
+    [Fact]
+    public async Task Controller_Refresh_OffersOnlyExplicitlyDeclaredCustomProvider()
+    {
+        TestCodexHomeFixture fixture = await TestCodexHomeFixture.CreateAsync();
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(fixture.CodexHome, "config.toml"),
+                "model_provider = \"custom\"\n\n[model_providers.custom]\nbase_url = \"https://example.com\"\n");
+            SimpleSwitcherController controller = SimpleAppComposition.CreateController(
+                fixture.CodexHome,
+                new FakeProcessProbe());
+
+            await controller.RefreshAsync();
+
+            Assert.Equal(["custom"], controller.Snapshot.Providers.Select(item => item.Id));
+            Assert.Equal("custom", controller.Snapshot.SelectedProviderId);
+        }
+        finally
+        {
+            Directory.Delete(fixture.Root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Controller_Refresh_AddsImplicitOpenAiToDeclaredCustomProvider()
+    {
+        TestCodexHomeFixture fixture = await TestCodexHomeFixture.CreateAsync();
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(fixture.CodexHome, "config.toml"),
+                "[model_providers.custom]\nbase_url = \"https://example.com\"\n");
+            SimpleSwitcherController controller = SimpleAppComposition.CreateController(
+                fixture.CodexHome,
+                new FakeProcessProbe());
+
+            await controller.RefreshAsync();
+
+            Assert.Equal(["openai", "custom"], controller.Snapshot.Providers.Select(item => item.Id));
+            Assert.Equal("openai", controller.Snapshot.SelectedProviderId);
+        }
+        finally
+        {
+            Directory.Delete(fixture.Root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Controller_Execute_MapsCoreSqliteBusyThroughApplicationToManualCloseBlock()
+    {
+        BusyPlanningWritePort writePort = new();
+        IApplicationService application = new ApplicationService(
+            new FixedStatusPort(SimpleSwitcherTestData.Status("custom", ["custom"])),
+            writePort,
+            new InMemoryApplicationPlanLedger());
+        SimpleSwitcherController controller = new(
+            new SimpleProviderService(application),
+            new FakeProcessProbe(),
+            @"C:\fixture\.codex");
+        await controller.RefreshAsync();
+
+        await controller.ExecuteAsync();
+
+        Assert.Equal(SimpleActivity.Blocked, controller.Snapshot.Activity);
+        Assert.False(controller.Snapshot.CanExecute);
+        Assert.Contains("手动关闭 Codex", controller.Snapshot.Message);
+        Assert.Contains("state_5.sqlite is currently in use", controller.Snapshot.Details);
+        Assert.Equal(1, writePort.PlanCalls);
+        Assert.Equal(0, writePort.ExecuteCalls);
+    }
+
     [Fact]
     public void ReadRootModelProvider_RequiresExactAssignmentKey()
     {
@@ -68,7 +143,7 @@ public sealed class SimpleSwitcherIntegrationTests
         try
         {
             AssertFixtureBoundary(fixture);
-            await fixture.WriteConfigAsync("model_provider = \"openai\"");
+            await fixture.WriteConfigAsync(string.Empty);
             string configPath = Path.Combine(fixture.CodexHome, "config.toml");
             byte[] before = await File.ReadAllBytesAsync(configPath);
             string rollout = fixture.RolloutPath("sessions", "rollout-sync.jsonl");
@@ -154,5 +229,51 @@ public sealed class SimpleSwitcherIntegrationTests
         Assert.True(IsWithin(Path.GetTempPath(), fixture.Root));
         Assert.True(IsWithin(fixture.Root, fixture.CodexHome));
         Assert.True(IsWithin(fixture.Root, fixture.BackupRoot()));
+    }
+
+    private sealed class FixedStatusPort(StatusSnapshot status) : IApplicationStatusPort
+    {
+        public Task<StatusSnapshot> GetStatusAsync(
+            ApplicationStatusRequest request,
+            CancellationToken cancellationToken = default) => Task.FromResult(status);
+    }
+
+    private sealed class BusyPlanningWritePort : IApplicationWritePort
+    {
+        internal int PlanCalls { get; private set; }
+        internal int ExecuteCalls { get; private set; }
+
+        public Task<ApplicationPlanPreview> CreatePlanAsync(
+            ApplicationWriteIntent intent,
+            string operationId,
+            CancellationToken cancellationToken = default)
+        {
+            PlanCalls++;
+            SqliteException original = new("native SQLite busy", 5, 5);
+            Exception busy = SqliteStateService.WrapSqliteBusyError(
+                original,
+                "update session provider metadata");
+            return CoreApplicationWritePort.MapCoreFailuresAsync<ApplicationPlanPreview>(
+                () => Task.FromException<ApplicationPlanPreview>(busy));
+        }
+
+        public Task<SyncResult> ExecuteSyncAsync(
+            SyncIntent intent,
+            ApplicationOperationPlan plan,
+            string operationId,
+            CancellationToken cancellationToken = default)
+        {
+            ExecuteCalls++;
+            throw new InvalidOperationException("Execution must not start when planning is busy.");
+        }
+
+        public Task<SyncResult> ExecuteSwitchAsync(SwitchIntent intent, ApplicationOperationPlan plan, string operationId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RestoreResult> ExecuteRestoreAsync(RestoreIntent intent, ApplicationOperationPlan plan, string operationId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<BackupPruneResult> ExecutePruneAsync(PruneIntent intent, ApplicationOperationPlan plan, string operationId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

@@ -7,6 +7,20 @@ namespace CodexProviderSync.Core.Tests;
 public sealed class CoreIntegrationTests
 {
     [Fact]
+    public async Task GetStatus_SeparatesDeclaredProvidersFromBuiltInConfiguredProviders()
+    {
+        TestCodexHomeFixture fixture = await TestCodexHomeFixture.CreateAsync();
+        await File.WriteAllTextAsync(
+            Path.Combine(fixture.CodexHome, "config.toml"),
+            "model_provider = \"custom\"\n\n[model_providers.custom]\nbase_url = \"https://example.com\"\n");
+
+        StatusSnapshot status = await new CodexSyncService().GetStatusAsync(fixture.CodexHome);
+
+        Assert.Equal(["custom"], status.DeclaredProviders);
+        Assert.Equal(["custom", "openai"], status.ConfiguredProviders);
+    }
+
+    [Fact]
     public async Task RunSync_RollsBackFirstRollout_WhenLaterTargetFails_Issue69()
     {
         TestCodexHomeFixture fixture = await TestCodexHomeFixture.CreateAsync();

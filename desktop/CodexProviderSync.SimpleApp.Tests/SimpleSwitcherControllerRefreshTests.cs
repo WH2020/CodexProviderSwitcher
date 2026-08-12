@@ -69,6 +69,29 @@ public sealed class SimpleSwitcherControllerRefreshTests
     }
 
     [Fact]
+    public async Task RefreshAsync_BlocksWhenSqliteCountsAreUnreadable()
+    {
+        SimpleSwitcherController controller = new(
+            new FakeSimpleProviderService(Status(
+                current: "openai",
+                configured: ["openai"],
+                sqliteCounts: new ProviderCounts
+                {
+                    Unreadable = true,
+                    Error = "state_5.sqlite is currently in use"
+                })),
+            new ThrowingProcessProbe(),
+            @"C:\fixture\.codex");
+
+        await controller.RefreshAsync();
+
+        Assert.Equal(SimpleActivity.Blocked, controller.Snapshot.Activity);
+        Assert.False(controller.Snapshot.CanExecute);
+        Assert.False(controller.Snapshot.SqliteSupported);
+        Assert.Equal("state_5.sqlite is currently in use", controller.Snapshot.Details);
+    }
+
+    [Fact]
     public async Task SelectProvider_RejectsUnknownProviderAndRecalculatesCanExecute()
     {
         SimpleSwitcherController controller = Controller(Status(

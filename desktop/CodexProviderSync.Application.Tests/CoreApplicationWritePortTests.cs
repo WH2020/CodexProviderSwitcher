@@ -1,10 +1,27 @@
 using System.Text.Json;
 using CodexProviderSync.Core;
+using Microsoft.Data.Sqlite;
 
 namespace CodexProviderSync.Application.Tests;
 
 public sealed class CoreApplicationWritePortTests
 {
+    [Fact]
+    public async Task MapsCoreSqliteBusyTypeToTargetBusyWithoutStringMatching()
+    {
+        SqliteException original = new("native SQLite busy", 5, 5);
+        SqliteBusyException busy = Assert.IsType<SqliteBusyException>(
+            SqliteStateService.WrapSqliteBusyError(original, "update session provider metadata"));
+
+        ApplicationPortException error = await Assert.ThrowsAsync<ApplicationPortException>(
+            () => CoreApplicationWritePort.MapCoreFailuresAsync<int>(
+                () => Task.FromException<int>(busy)));
+
+        Assert.Equal("target_busy", error.Code);
+        Assert.Same(busy, error.InnerException);
+        Assert.Contains(original.Message, error.Message);
+    }
+
     [Fact]
     public async Task ProductionSync_DefaultsToDryRunThenAppliesTheExactCorePlan()
     {

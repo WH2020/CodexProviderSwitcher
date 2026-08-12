@@ -56,6 +56,7 @@ public sealed class CodexSyncService
         CodexStorageLayout storage = await PrepareStorageAsync(codexHome, explicitSqliteHome, configText);
         CurrentProviderInfo currentProvider = _configFileService.ReadCurrentProviderFromConfigText(configText);
         IReadOnlyList<string> configuredProviders = _configFileService.ListConfiguredProviderIds(configText);
+        IReadOnlyList<string> declaredProviders = _configFileService.ListDeclaredProviderIds(configText);
         SessionChangeCollection rolloutInfo = await _sessionRolloutService.CollectSessionChangesAsync(codexHome, "__status_only__", skipLockedReads: true);
         StateDbLocation? stateDbLocation = storage.StateDbLocation;
         ProviderCounts? sqliteCounts = storage.SqliteAccess.Supported
@@ -83,6 +84,7 @@ public sealed class CodexSyncService
             CheckedStateDbPaths = storage.StateDbCandidates.Select(static candidate => candidate.Path).ToList(),
             CurrentProvider = currentProvider,
             ConfiguredProviders = configuredProviders,
+            DeclaredProviders = declaredProviders,
             RolloutCounts = rolloutInfo.ProviderCounts,
             LockedRolloutFiles = rolloutInfo.LockedPaths,
             UnreadableRolloutFiles = rolloutInfo.UnreadablePaths,

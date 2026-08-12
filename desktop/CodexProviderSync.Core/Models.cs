@@ -25,6 +25,7 @@ public sealed class StatusSnapshot
     public IReadOnlyList<string> CheckedStateDbPaths { get; init; } = [];
     public required CurrentProviderInfo CurrentProvider { get; init; }
     public required IReadOnlyList<string> ConfiguredProviders { get; init; }
+    public IReadOnlyList<string> DeclaredProviders { get; init; } = [];
     public required ProviderCounts RolloutCounts { get; init; }
     public required IReadOnlyList<string> LockedRolloutFiles { get; init; }
     public required IReadOnlyList<string> UnreadableRolloutFiles { get; init; }

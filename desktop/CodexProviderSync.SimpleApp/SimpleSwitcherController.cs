@@ -58,6 +58,10 @@ internal sealed class SimpleSwitcherController
             {
                 completed = BuildRecoverySnapshot(status, providers, selected);
             }
+            else if (status.SqliteCounts is { Unreadable: true })
+            {
+                completed = BuildUnreadableSqliteSnapshot(status, providers, selected);
+            }
             else if (!status.SqliteAccess.Supported)
             {
                 completed = BuildBlockedSnapshot(status, providers, selected);
@@ -151,6 +155,11 @@ internal sealed class SimpleSwitcherController
             if (refreshed.PendingTransactions.Count > 0)
             {
                 completed = BuildRecoverySnapshot(refreshed, providers, selectedProvider);
+                return;
+            }
+            if (refreshed.SqliteCounts is { Unreadable: true })
+            {
+                completed = BuildUnreadableSqliteSnapshot(refreshed, providers, selectedProvider);
                 return;
             }
             if (!refreshed.SqliteAccess.Supported)
@@ -329,6 +338,23 @@ internal sealed class SimpleSwitcherController
         CanExecute = false
     };
 
+    private SimpleSwitcherSnapshot BuildUnreadableSqliteSnapshot(
+        StatusSnapshot status,
+        IReadOnlyList<SimpleProviderItem> providers,
+        string? selectedProvider) => new()
+    {
+        Activity = SimpleActivity.Blocked,
+        CodexHome = _codexHome,
+        CurrentProviderId = status.CurrentProvider.Provider,
+        SqliteSupported = false,
+        Providers = providers,
+        SelectedProviderId = selectedProvider,
+        Message = "SQLite 状态不可用，无法执行切换。",
+        Details = status.SqliteCounts?.Error ?? string.Empty,
+        EncryptedContentWarning = status.EncryptedContentWarning,
+        CanExecute = false
+    };
+
     private SimpleSwitcherSnapshot BuildReadySnapshot(
         StatusSnapshot status,
         IReadOnlyList<SimpleProviderItem> providers,
@@ -357,7 +383,7 @@ internal sealed class SimpleSwitcherController
     private static IReadOnlyList<SimpleProviderItem> BuildProviders(StatusSnapshot status)
     {
         HashSet<string> configured = new(
-            status.ConfiguredProviders.Where(item => !string.IsNullOrWhiteSpace(item)),
+            status.DeclaredProviders.Where(item => !string.IsNullOrWhiteSpace(item)),
             StringComparer.Ordinal);
         if (status.CurrentProvider.Implicit
             && string.Equals(

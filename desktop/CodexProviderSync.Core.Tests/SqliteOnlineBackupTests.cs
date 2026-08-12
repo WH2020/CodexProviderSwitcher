@@ -5,6 +5,23 @@ namespace CodexProviderSync.Core.Tests;
 
 public sealed class SqliteOnlineBackupTests
 {
+    [Theory]
+    [InlineData(5)]
+    [InlineData(6)]
+    public void WrapSqliteBusyError_PreservesTypedCauseAndMessage(int errorCode)
+    {
+        SqliteException original = new("native SQLite busy", errorCode, errorCode);
+
+        Exception wrapped = SqliteStateService.WrapSqliteBusyError(
+            original,
+            "update session provider metadata");
+
+        SqliteBusyException busy = Assert.IsType<SqliteBusyException>(wrapped);
+        Assert.Same(original, busy.InnerException);
+        Assert.Contains("update session provider metadata", busy.Message);
+        Assert.Contains(original.Message, busy.Message);
+    }
+
     [Fact]
     public async Task WritesConfigureSynchronousFull_AndNodeDotNetCountersAgree()
     {

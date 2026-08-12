@@ -267,7 +267,7 @@ public sealed class CoreApplicationWritePort : IApplicationWritePort
             : Path.GetFullPath(value.Trim());
     }
 
-    private static async Task<T> MapCoreFailuresAsync<T>(Func<Task<T>> operation)
+    internal static async Task<T> MapCoreFailuresAsync<T>(Func<Task<T>> operation)
     {
         try
         {
@@ -284,6 +284,13 @@ public sealed class CoreApplicationWritePort : IApplicationWritePort
         {
             throw new ApplicationPortException(
                 "plan_expired",
+                error.Message,
+                innerException: error);
+        }
+        catch (SqliteBusyException error)
+        {
+            throw new ApplicationPortException(
+                "target_busy",
                 error.Message,
                 innerException: error);
         }

@@ -878,7 +878,7 @@ public sealed class SqliteStateService
             return error;
         }
 
-        return new InvalidOperationException(
+        return new SqliteBusyException(
             $"Unable to {action} because state_5.sqlite is currently in use. Close Codex and the Codex app, then retry. Original error: {sqliteError.Message}",
             sqliteError);
     }

@@ -90,11 +90,17 @@ public sealed partial class ConfigFileService
 
     public IReadOnlyList<string> ListConfiguredProviderIds(string configText)
     {
-        HashSet<string> providerIds = new(StringComparer.Ordinal)
+        HashSet<string> providerIds = new(ListDeclaredProviderIds(configText), StringComparer.Ordinal)
         {
             AppConstants.DefaultProvider
         };
 
+        return providerIds.OrderBy(static value => value, StringComparer.Ordinal).ToList();
+    }
+
+    public IReadOnlyList<string> ListDeclaredProviderIds(string configText)
+    {
+        HashSet<string> providerIds = new(StringComparer.Ordinal);
         foreach (Match match in ProviderRegex().Matches(configText))
         {
             providerIds.Add(match.Groups[1].Value);
