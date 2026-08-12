@@ -8,6 +8,20 @@ namespace CodexProviderSync.SimpleApp.Tests;
 public sealed class SimpleSwitcherIntegrationTests
 {
     [Fact]
+    public void ReadRootModelProvider_RequiresExactAssignmentKey()
+    {
+        const string config = """
+            model_provider_backup = "apigather"
+            model_provider = "openai"
+
+            [model_providers.apigather]
+            model_provider = "section-value"
+            """;
+
+        Assert.Equal("openai", ReadRootModelProvider(config));
+    }
+
+    [Fact]
     public async Task Controller_SwitchesConfigRolloutAndSqliteToConfiguredProvider()
     {
         TestCodexHomeFixture fixture = await TestCodexHomeFixture.CreateAsync();
@@ -90,13 +104,16 @@ public sealed class SimpleSwitcherIntegrationTests
             {
                 return null;
             }
-            if (trimmed.StartsWith("model_provider", StringComparison.Ordinal))
+            int separator = trimmed.IndexOf('=');
+            if (separator < 0
+                || !string.Equals(
+                    trimmed[..separator].Trim(),
+                    "model_provider",
+                    StringComparison.Ordinal))
             {
-                int separator = trimmed.IndexOf('=');
-                return separator < 0
-                    ? null
-                    : trimmed[(separator + 1)..].Trim().Trim('"');
+                continue;
             }
+            return trimmed[(separator + 1)..].Trim().Trim('"');
         }
         return null;
     }

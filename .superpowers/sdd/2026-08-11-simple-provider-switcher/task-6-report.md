@@ -74,3 +74,9 @@ dotnet test CodexProviderSync.sln -c Release --no-build
 - 新集成测试覆盖本地 Windows 文件系统上的成功 switch/sync 和同 Provider sync；未在 SimpleApp 层重复注入进程崩溃、I/O 失败、文件锁或 rollback 失败。这些事务故障由现有 Core fault-injection 测试覆盖，但 UI 到故障结果的跨层组合仍主要由 controller/service 单元测试证明。
 - 真实 WSL UNC SQLite Home 不属于该隔离集成 fixture；解决方案中对应 1 项测试按环境条件跳过。
 - 测试进程异常终止时 `finally` 可能无法清理临时 root；路径仍被限制在 `%TEMP%\codex-provider-sync-<guid>`，不会转向真实 profile。
+
+## Minor：root provider 键精确匹配
+
+- RED：新增 `ReadRootModelProvider_RequiresExactAssignmentKey`，配置在 root 中先放置 `model_provider_backup = "apigather"` 这一前缀诱饵键，并在后续 section 中放置另一个 `model_provider`。旧的前缀匹配实现会错误返回 `apigather`，因此该用例用于锁定 root assignment key 的精确语义。
+- GREEN：helper 仅在 `=` 左侧 trim 后以 `StringComparison.Ordinal` 精确等于 `model_provider` 时取值；遇到第一个 section header 后停止扫描。该修改仅影响测试读取 helper，不改变 production switch/sync 逻辑。
+- 验证范围：本轮按“尽量减少不必要测试”原则，仅运行 `SimpleSwitcherIntegrationTests` 的指定 filter（3 项）；不重复执行先前已记录的 SimpleApp 全项目 78/78 和解决方案 444 passed、1 skipped。
