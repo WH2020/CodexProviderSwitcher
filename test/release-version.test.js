@@ -76,6 +76,7 @@ test("current repository versions match an explicit tag", () => {
     "desktop/CodexProviderSync.Core/CodexProviderSync.Core.csproj",
     "desktop/CodexProviderSync.GuiE2E/CodexProviderSync.GuiE2E.csproj",
     "desktop/CodexProviderSync.Mac/CodexProviderSync.Mac.csproj",
+    "desktop/CodexProviderSync.SimpleApp/CodexProviderSync.SimpleApp.csproj",
   ]);
 });
 
